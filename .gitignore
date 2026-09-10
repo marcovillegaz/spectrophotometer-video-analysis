@@ -1,0 +1,32 @@
+# Ambiente virtual
+.venv/
+
+# Videos fuente: pesados, no se versionan
+videos/
+*.MOV
+*.mov
+*.mp4
+
+# Fotogramas de cada corrida: regenerables desde el video
+runs/*/frames/
+runs/*/samples/
+
+# Corrida vieja del layout de un solo video, conservada aparte hasta decidir
+old_data/
+
+# Se versionan: calib/ (receta y plantillas), runs/*/config.json y runs/*/out/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Editor / SO
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Grafo de conocimiento: cache regenerable de graphify
+graphify-out/

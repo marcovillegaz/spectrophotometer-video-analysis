@@ -1,0 +1,6 @@
+numpy
+opencv-python        # incluye GUI (selectROI) y decodificador HEVC; NO usar headless
+imageio-ffmpeg       # respaldo: binario ffmpeg estatico, por si el del sistema no esta
+pandas
+matplotlib
+pytest
