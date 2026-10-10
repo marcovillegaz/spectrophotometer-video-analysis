@@ -4,3 +4,4 @@ imageio-ffmpeg       # respaldo: binario ffmpeg estatico, por si el del sistema 
 pandas
 matplotlib
 pytest
+pytest-cov
