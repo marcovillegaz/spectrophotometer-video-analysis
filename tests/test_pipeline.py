@@ -15,7 +15,7 @@ from spectro.extract import FrameRow, load_frames_index, write_frames_index
 from spectro.qc import load_qc_report, run_qc
 from spectro.read import run_read
 from spectro.report import run_report
-from spectro.templates import load_templates, template_path
+from spectro.library import load as load_templates, template_path
 
 
 @pytest.fixture
@@ -146,7 +146,7 @@ def test_hora_absoluta_agrega_columna(proyecto):
 
 
 def test_biblioteca_vacia_da_mensaje_util(tmp_path):
-    with pytest.raises(FileNotFoundError, match="templates"):
+    with pytest.raises(FileNotFoundError, match="teach"):
         load_templates(tmp_path)
 
 
