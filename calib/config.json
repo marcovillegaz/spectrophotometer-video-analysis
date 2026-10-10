@@ -1,20 +1,23 @@
 {
   "video": "",
   "fps": 1.0,
+  "rotation_deg": 0.0,
   "roi": {
-    "x": 754,
-    "y": 706,
-    "w": 127,
-    "h": 48
+    "x": 767,
+    "y": 660,
+    "w": 128,
+    "h": 41
   },
   "digits": {
-    "n_digits": 5,
+    "n_digits": 6,
     "splits": [],
     "separator_slots": [
-      1
+      2
     ],
     "decimal_after": 1,
-    "polarity": "light_on_dark"
+    "polarity": "light_on_dark",
+    "sign_slot": 0,
+    "sign_max_ink": 0.03
   },
   "templates": {
     "size": [
@@ -33,13 +36,13 @@
     "min_ink_fraction": 0.01,
     "max_ink_fraction": 0.85,
     "anchor": {
-      "x": 696,
-      "y": 273,
-      "w": 381,
-      "h": 96
+      "x": 743,
+      "y": 311,
+      "w": 384,
+      "h": 82
     },
     "min_anchor_ncc": 0.7,
-    "reference_frame": "t_0000601.000.jpg",
+    "reference_frame": "t_0001352.000.jpg",
     "max_shift_px": 40,
     "register": true
   },
