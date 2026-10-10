@@ -117,7 +117,7 @@ niega cuando la resolución del fotograma no coincide con la de la referencia, y
 corrimiento sacaría la ROI fuera del fotograma.
 
 Es lo que hace viable `batch`: sin `--auto`, procesar diez videos son diez sesiones interactivas
-con `cv2.selectROI`.
+con la UI de `calib_ui` (panel lateral con botones; rectángulo amarillo, rotación, celdas y signo). Su vista previa llama a `read.read_frame` con la biblioteca de `calib/templates`, el mismo camino que `read`, así que muestra lo que el pipeline va a hacer con esa calibración.
 
 ## Módulos
 
@@ -133,6 +133,11 @@ con `cv2.selectROI`.
 | `qc.py` | métricas de calidad sobre la ROI, re-registro, umbrales automáticos | `run_qc`, `measure`, `classify`, `suggest_thresholds`, `load/write_qc_report` |
 | `read.py` | NCC contra la biblioteca → caracteres → valor; chequeos de confianza y de plausibilidad | `run_read`, `read_frame`, `match_slot`, `assemble`, `flag_spikes` |
 | `report.py` | CSV final, gráfico y hoja de contacto; cuadre de conteos | `run_report`, `write_absorbance_csv`, `plot_preview` |
+| `calib_ui.py` | UI de calibración manual: panel lateral con botones, lupa del cursor, rotación y vista previa de lectura; la lógica (estado, acciones, layout) es pura y se testea sin ventana | `UIState`, `apply_action`, `layout_panel`, `lens_patch`, `preview_reading`, `run_calibration_ui` |
+| `teach.py` | valores escritos → una etiqueta por celda → plantillas; biblioteca (agregar sin duplicar, listar, borrar, re-etiquetar) y validación leave-one-out | `value_to_cells`, `build_pool`, `write_library`, `add_to_library`, `list_library`, `validate`, `load/save_truth` |
+| `sampling.py` | qué fotogramas etiquetar: uniforme, azar estratificado, por incertidumbre (con persistencia y diversidad); conjuntos de entrenamiento y prueba | `suggest`, `suggest_uncertain`, `suggest_random`, `uncertainty`, `assign`, `leakage`, `readings_stale` |
+| `evaluation.py` | evaluación sobre la prueba: correcta / errónea aceptada / descartada, intervalos de Wilson, tipo de prueba e historial | `evaluate_test`, `wilson`, `format_test_report`, `append_history` |
+| `teach_ui.py` | UI de `teach`: muestras, conjunto activo, cola, evaluar y gestión de la biblioteca | `TeachState`, `apply_action`, `layout_teach`, `render_teach`, `run_teach_ui` |
 
 `imaging.py` no estaba en el plan original y se agregó al implementar: `qc`, `templates` y `read`
 tienen que binarizar y recortar **exactamente igual**, porque si la binarización con la que se
@@ -206,6 +211,100 @@ debería y la lectura entera se descarta.
 Detalle que sorprende y conviene tener presente: la fuente del equipo es monoespaciada y **el punto
 ocupa su propia celda de caracter**. Por eso `0.597` son **5 slots**, no 4, y el reparto uniforme
 de la ROI en 5 partes cae perfecto sobre los caracteres.
+
+### Los valores escritos reemplazan el etiquetado a ciegas
+
+Agrupar glifos por hash y pedir que el usuario adivine qué es cada uno escala mal: con deriva de
+cámara salían 56 "glifos únicos" cuando el display sólo tiene 12 caracteres. `teach` invierte el
+problema: el usuario escribe el valor de un fotograma (`-0.018`) y, como el formato es fijo, cada
+celda queda etiquetada sola. Dos consecuencias:
+
+* **Todo recorte usa el offset de `qc`**, igual que `read`. Si la biblioteca se armara sin
+  compensar la deriva, sus glifos no serían los que después se leen.
+* **Hay una verdad de referencia**, así que la confianza se mide en vez de suponerse. La validación
+  es *leave-one-out*: cada muestra se lee sin los glifos que salieron de ella misma, porque si no
+  la exactitud sería circular. Un `-` o un `7` con un único ejemplo se evalúa sin ninguno: el
+  informe lo marca en vez de esconderlo.
+
+### Agregar a la biblioteca deduplica, y la biblioteca se puede auditar
+
+Sumar plantillas sin más hace crecer la biblioteca con casi-duplicados, y las variantes de un
+carácter compiten con las de otro por el margen mínimo entre etiquetas. Por eso `add_to_library`
+descarta lo que ya está (mismo carácter y NCC ≥ 0,95 contra una plantilla existente), cuenta lo
+existente contra el tope por carácter y es idempotente. El criterio es la **NCC**, la misma medida con
+la que lee el lector, y no el hash perceptual de 8×8: en `img_8102` el hash declaraba "duplicado" a un
+`6` con NCC 0,755 contra la plantilla `6` que el lector confundía con un `5` (NCC 0,84), y por eso
+nunca se agregaba. "Duplicado" tiene que significar "no le aporta nada al lector". Cada plantilla lleva además cuántas celdas de
+las muestras gana bien (`uses`) y cuántas gana mal (`errors`): una plantilla con errores o una
+biblioteca armada con otra geometría se ve de inmediato, en vez de aparecer como lecturas perdidas.
+
+### Muestreo por incertidumbre y conjunto de prueba
+
+El ciclo de calibración (etiquetar, agregar, evaluar, repetir) es aprendizaje supervisado con humano
+en el circuito. La [guía de calibración](GUIA_CALIBRACION.md) lo explica paso a paso; acá, las decisiones
+y el riesgo que cada una cubre.
+
+* **La prueba es al azar, estratificado por tiempo, nunca por incertidumbre.** Una prueba formada por
+  los casos difíciles subestima la exactitud real; una formada por los fáciles la sobrestima. Solo el
+  azar es representativo. Se arma primero y se aparta (`test.csv`), y **nunca entra a la biblioteca**.
+* **Distancia mínima entre prueba y entrenamiento (`--gap`, 5 s).** A 4 fotogramas por segundo los
+  vecinos son casi la misma imagen; un fotograma de prueba pegado a uno de entrenamiento infla la
+  exactitud (_data leakage_). Se avisa cuando se viola. Mover una muestra de entrenamiento a prueba
+  avisa que **ya aportó glifos** a la biblioteca: no se guarda de qué muestra salió cada plantilla.
+* **La métrica separa tres resultados**: correcta, **errónea aceptada** y descartada. El proyecto
+  prefiere abstenerse a equivocarse, así que el número que importa es la tasa de error *entre las
+  aceptadas* y la cobertura, no una exactitud única. Los intervalos de Wilson (95 %) acompañan a cada
+  porcentaje porque con 20 muestras la cifra sola engaña; suponen independencia, y por eso el informe
+  cuenta los **valores distintos** (con un valor que se mantiene minutos, 20 fotogramas pueden ser pocos).
+* **`misma_corrida` u `otro_video`.** Una prueba de la misma corrida mide ese video; la medida honesta
+  es la de un video sin entrenamiento propio (_hold-out_ por video). `teach --eval` lo marca, y la
+  biblioteca compartida con pruebas por corrida (`--eval-all`) permite reservar un video entero.
+* **La incertidumbre mira confianza *y* margen** (`u = min((conf − min_score)/min_score, (margen −
+  min_margin)/min_margin)`), porque el lector descarta por ambos. Por eso `read` guarda `margen`.
+* **Persistencia temporal al 80 %.** Los fotogramas más inciertos son, sobre todo, el último dígito a
+  medio redibujar: no se pueden etiquetar. El display lo redibuja con un parpadeo `ok`/baja durante
+  varios segundos cada vez que el valor cambia (en `img_8102`, ~60 % de los vecinos dudan y todas las
+  rachas de baja confianza duran ≤ 1 s). Con un umbral de 50 % ese parpadeo pasaba el filtro (5 de 6
+  sugerencias eran basura); con 80 %, solo califica lo que hace dudar a casi todos los vecinos, que es
+  lo que haría un glifo desconocido. En una corrida donde no hay glifos desconocidos, el resultado
+  correcto es "no hay inciertos persistentes" y completar con azar.
+* **Mixto por defecto.** Etiquetar solo lo difícil sesga el modelo hacia lo raro; la mitad al azar
+  mantiene el panorama general.
+* **Arranque en frío y lecturas viejas.** Con menos del 10 % de lecturas `ok`, o sin `readings.csv`, la
+  incertidumbre no informa y la ronda es uniforme. Si `readings.csv` es anterior a la biblioteca o a la
+  config (algo que ya pasó al cambiar la geometría), sus confianzas son de otro modelo: se usa azar y se
+  avisa.
+* **Los errores confiados solo los encuentra la prueba.** Un `6` leído como `5` con confianza 0,84 no
+  aparece en la incertidumbre. Las `erróneas aceptadas` de `--eval` son la señal para decidir qué
+  etiquetar después.
+
+### Una biblioteca compartida, muestras por corrida
+
+La biblioteca (`calib/templates/`) es una sola porque el display es el mismo equipo; las muestras
+(`truth.csv`, `test.csv`) son por corrida porque cada una apunta a fotogramas de un video concreto y
+se recorta con la config de ese video. `teach --build --all-runs` junta las muestras de entrenamiento de
+todas las corridas: cada una pasa por su propia ROI, rotación, celdas y corrimiento de cámara, y los
+glifos se mezclan porque `normalize_glyph` los lleva al mismo tamaño. Dos detalles de implementación que
+importan: las muestras se identifican como `corrida/archivo` (los videos repiten nombres de fotograma, y
+con el nombre solo el leave-one-out descartaría también los glifos homónimos de otro video), y la
+validación lee cada muestra con la config de su corrida, no con una única. `--exclude-runs` reserva
+videos enteros como prueba. El riesgo de compartir es que una etiqueta equivocada contamina a todos los
+videos; por eso el leave-one-out se informa por corrida.
+
+### El signo se decide por tinta, y la rotación se aplica al cargar
+
+Algunas mediciones son negativas (`-0.018`). El display no mueve los dígitos: el `-` aparece en una
+**celda fija a la izquierda** (`digits.sign_slot`) que queda vacía cuando el valor es positivo. Esa
+celda se decide por **fracción de tinta** y no por NCC: una celda vacía con ruido no correlaciona con
+ninguna plantilla y daría falsos descartes. Si hay tinta, tiene que matchear la plantilla `-` con
+score y margen suficientes; si no, la lectura se descarta. Sin `sign_slot` el comportamiento es el
+de siempre, pero entonces un `-` fuera de la ROI se perdería sin aviso: en displays que pueden dar
+negativos, hay que calibrar con signo.
+
+Cuando el teléfono queda torcido, `rotation_deg` rota cada fotograma en `imaging.load_frame`, el
+único punto donde se carga una imagen para analizarla. Se hace en runtime y no en `extract` porque
+ffmpeg recorta (`--roi-only`) sobre el fotograma sin rotar, y porque así el ángulo se puede corregir
+sin volver a decodificar el video.
 
 ### El QC mide sobre la ROI, no sobre el fotograma entero
 

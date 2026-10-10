@@ -59,6 +59,7 @@ campo explicado abajo:
 |---|---|---|---|
 | `video` | string | `""` | 📍 Video de esta corrida. Lo escribe `new`, y también `extract --save-config`. En `calib/config.json` va vacío: la receta no pertenece a ningún video. |
 | `fps` | float | `1.0` | 📍 Frecuencia de muestreo de esta corrida. La escribe `new --fps`; el que manda al extraer es el flag `--fps`. |
+| `rotation_deg` | float | `0.0` | 🔗 Grados (antihorario) que se rotan los fotogramas **al cargarlos** para dejar el número horizontal. `roi` y `qc.anchor` están en coordenadas del fotograma ya rotado. Lo fija `calibrate` (UI o `--rotate`); `calibrate --auto` lo hereda de la receta. Incompatible con `extract --roi-only`. |
 
 ## `roi` — la región del número — 📍 por corrida (🔗 en `calib/` es la *referencia*)
 
@@ -87,6 +88,8 @@ en slots es uniforme y se apoya en eso.
 | `separator_slots` | lista de int | `[1]` | Índices (0-based) de los slots que son separadores. Se leen como control de alineación pero no aportan dígitos. Vacío = ninguno. |
 | `decimal_after` | int | `1` | Dígitos antes del punto. Con dígitos `0,5,9,7` y `decimal_after: 1` → `0.597`. |
 | `polarity` | string | `light_on_dark` | `light_on_dark` (display luminoso, como este) o `dark_on_light` (LCD reflectivo clásico). Lo detecta `calibrate` solo. |
+| `sign_slot` | int o `null` | `null` | Índice de la **celda del signo** (normalmente `0`). Cuenta dentro de `n_digits`. La celda queda vacía cuando el valor es positivo; con `null` el display se trata como sin signo. Receta con signo: `n_digits: 6`, `sign_slot: 0`, `separator_slots: [2]`. |
+| `sign_max_ink` | float | `0.03` | Fracción de tinta bajo la cual la celda del signo se considera vacía (valor positivo). |
 
 ## `templates` — biblioteca y matcheo — 🔗 compartido
 
