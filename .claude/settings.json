@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python -m pytest)",
+      "Bash(.venv/Scripts/python -m pytest *)",
+      "Bash(.venv/Scripts/python -m spectro --help)",
+      "Bash(.venv/Scripts/python -m spectro doctor)",
+      "Bash(.venv/Scripts/python -m spectro teach --help)",
+      "Bash(.venv/Scripts/python -m spectro teach status)",
+      "Bash(.venv/Scripts/python -m spectro teach lib list)",
+      "Bash(.venv/Scripts/python -m spectro teach lib list *)",
+      "Bash(.venv/Scripts/python -m spectro teach samples list)",
+      "Bash(.venv/Scripts/python -m spectro teach samples list *)",
+      "Bash(.venv/Scripts/python -m spectro teach test list)",
+      "Bash(.venv/Scripts/python -m spectro teach test list *)",
+      "Bash(.venv/Scripts/python -m spectro teach test history *)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ],
+    "ask": [
+      "Bash(git commit *)"
+    ],
+    "deny": [
+      "Edit(calib/templates/**)",
+      "Write(calib/templates/**)",
+      "Edit(runs/**/truth.csv)",
+      "Write(runs/**/truth.csv)",
+      "Edit(runs/**/test.csv)",
+      "Write(runs/**/test.csv)",
+      "Read(videos/**)",
+      "Bash(git push *)",
+      "Bash(git reset --hard *)",
+      "Bash(rm -rf calib *)",
+      "Bash(rm -rf runs *)",
+      "Bash(rm -rf videos *)"
+    ]
+  }
+}
