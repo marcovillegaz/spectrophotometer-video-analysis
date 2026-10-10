@@ -1,23 +1,26 @@
-"""Primitivas de imagen compartidas por ``qc``, ``templates``, ``read`` y ``calibrate``.
+"""Primitivas de imagen compartidas por ``qc``, ``teach``, ``read`` y ``calibrate``.
 
 Concentra en un solo lugar las operaciones que deben ser *identicas* en todas
-las etapas: si la binarizacion que usa ``templates`` para construir la
+las etapas: si la binarizacion que usa ``teach`` para construir la
 biblioteca no fuera la misma que usa ``read`` para comparar, la correlacion
 caeria sin motivo aparente. Por eso viven aca y no duplicadas en cada modulo.
 
 Interfaz publica:
     load_gray(path)                  -> ndarray uint8 (H, W)
+    load_frame(path, cfg, color)     -> fotograma con rotation_deg aplicada
+    rotate(img, deg)                 -> ndarray rotado
     crop_for_reading(img, cfg, ...)  -> ndarray recortado a la ROI
     binarize(gray, polarity)         -> ndarray uint8 {0,255}, tinta en blanco
     slot_boxes(roi_w, digits)        -> [(x0, x1), ...] por slot
     normalize_glyph(binary, size)    -> ndarray uint8 del tamano de plantilla
+    read_roi(frame, cfg, ...)        -> (roi, binaria) por el camino de la lectura
+    cell_glyphs(frame, cfg, ...)     -> [CellGlyph, ...] un glifo normalizado por slot
     ncc(a, b)                        -> float en [-1, 1]
-    phash(binary)                    -> int (hash perceptual de 64 bits)
-    hamming(a, b)                    -> int
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -41,6 +44,21 @@ def load_color(path: Path | str) -> np.ndarray:
     return img
 
 
+def rotate(img: np.ndarray, deg: float) -> np.ndarray:
+    """Rota ``img`` ``deg`` grados (antihorario) alrededor del centro, mismo tamano."""
+    if not deg:
+        return img
+    h, w = img.shape[:2]
+    m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), float(deg), 1.0)
+    return cv2.warpAffine(img, m, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+def load_frame(path: Path | str, cfg: Config, color: bool = False) -> np.ndarray:
+    """Carga un fotograma y le aplica ``cfg.rotation_deg``: unico punto donde se rota."""
+    img = load_color(path) if color else load_gray(path)
+    return rotate(img, cfg.rotation_deg)
+
+
 def crop_for_reading(
     image: np.ndarray,
     cfg: Config,
@@ -62,6 +80,14 @@ def crop_for_reading(
     if not cfg.roi.is_valid():
         raise ValueError(
             "config.json no tiene una ROI valida. Corre: python -m spectro calibrate"
+        )
+    h, w = image.shape[:2]
+    if h < cfg.roi.h or w < cfg.roi.w:  # un exceso en el borde se recorta (ROI.crop)
+        raise ValueError(
+            f"el fotograma ({w}x{h}) no puede contener la ROI de la config "
+            f"(x={cfg.roi.x} y={cfg.roi.y} w={cfg.roi.w} h={cfg.roi.h}) y no hay "
+            "'.roi.json' que diga que ya es un recorte. Volve a extraer los fotogramas: "
+            "python -m spectro extract --roi-only"
         )
     return shifted(cfg.roi, offset, image.shape).crop(image)
 
@@ -185,6 +211,58 @@ def normalize_glyph(binary_slot: np.ndarray, size: tuple[int, int]) -> np.ndarra
     return cv2.resize(binary_slot, (w, h), interpolation=cv2.INTER_AREA)
 
 
+@dataclass(frozen=True)
+class CellGlyph:
+    """Una celda ya cortada: el glifo normalizado y cuanta tinta tenia el recorte."""
+
+    image: np.ndarray
+    #: Fraccion de pixeles de tinta del recorte binario, antes de normalizar.
+    ink: float
+    #: Cantidad de pixeles del recorte (0 si el corte cayo fuera de la ROI).
+    size: int
+
+    def is_empty(self, digits: DigitsConfig) -> bool:
+        """La celda no tiene tinta: el criterio de la celda del signo vacia.
+
+        Es **el unico** lugar donde se decide: ``read`` lo usa para tomar un signo
+        positivo y ``teach`` para no etiquetar celdas vacias.
+        """
+        return self.size == 0 or self.ink < digits.sign_max_ink
+
+
+def read_roi(
+    frame: np.ndarray,
+    cfg: Config,
+    offset: tuple[int, int] = (0, 0),
+    frames_roi: ROI | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(roi, binaria)`` de un fotograma: recorte por corrimiento de qc y binarizado."""
+    roi = crop_for_reading(frame, cfg, frames_roi, offset)
+    return roi, binarize(roi, cfg.digits.polarity)
+
+
+def cell_glyphs(
+    frame: np.ndarray,
+    cfg: Config,
+    offset: tuple[int, int] = (0, 0),
+    frames_roi: ROI | None = None,
+) -> list[CellGlyph]:
+    """Un glifo normalizado por slot: **el unico camino** de recorte para leer y para aprender.
+
+    Recorta la ROI con el corrimiento que midio ``qc``, binariza, corta por slots y
+    normaliza al tamano de plantilla. Quien arma la biblioteca (``teach``)
+    y quien lee (``read``, ``qc``) pasan por aca: una diferencia minima entre
+    los dos hace caer la correlacion sin dejar rastro.
+    """
+    roi, binary = read_roi(frame, cfg, offset, frames_roi)
+    out: list[CellGlyph] = []
+    for x0, x1 in slot_boxes(roi.shape[1], cfg.digits):
+        cell = binary[:, x0:x1]
+        ink = float(np.count_nonzero(cell)) / max(cell.size, 1)
+        out.append(CellGlyph(normalize_glyph(cell, cfg.templates.size), ink, int(cell.size)))
+    return out
+
+
 def ncc(a: np.ndarray, b: np.ndarray) -> float:
     """Correlacion cruzada normalizada entre dos imagenes del mismo tamano."""
     if a.shape != b.shape:
@@ -198,25 +276,6 @@ def ncc(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.sum(af * bf) / denom)
 
 
-def phash(binary: np.ndarray, side: int = 8) -> int:
-    """Hash perceptual de 64 bits: 1 por pixel de tinta en una grilla ``side``x``side``.
-
-    Alcanza para agrupar recortes del mismo glifo, que es todo lo que necesita
-    ``templates`` para reducir miles de recortes a ~11 glifos unicos.
-    """
-    small = cv2.resize(binary, (side, side), interpolation=cv2.INTER_AREA)
-    bits = (small > 127).flatten()
-    value = 0
-    for bit in bits:
-        value = (value << 1) | int(bit)
-    return value
-
-
-def hamming(a: int, b: int) -> int:
-    """Distancia de Hamming entre dos hashes."""
-    return int(a ^ b).bit_count()
-
-
 def draw_overlay(
     image: np.ndarray, roi: ROI, digits: DigitsConfig, anchor: ROI | None = None
 ) -> np.ndarray:
@@ -228,9 +287,15 @@ def draw_overlay(
     canvas = image.copy()
     if canvas.ndim == 2:
         canvas = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
-    cv2.rectangle(canvas, (roi.x, roi.y), (roi.x + roi.w, roi.y + roi.h), (0, 255, 0), 1)
+    # Amarillo: contrasta con el fondo azul del display.
+    cv2.rectangle(canvas, (roi.x, roi.y), (roi.x + roi.w, roi.y + roi.h), (0, 255, 255), 2)
     for i, (x0, x1) in enumerate(slot_boxes(roi.w, digits)):
-        color = (0, 128, 255) if i in (digits.separator_slots or []) else (0, 255, 255)
+        if i == digits.sign_slot:
+            color = (0, 255, 0)
+        elif i in (digits.separator_slots or []):
+            color = (0, 128, 255)
+        else:
+            color = (0, 255, 255)
         cv2.line(canvas, (roi.x + x0, roi.y), (roi.x + x0, roi.y + roi.h), color, 1)
     cv2.line(
         canvas,

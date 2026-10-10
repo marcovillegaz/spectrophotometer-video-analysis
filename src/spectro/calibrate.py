@@ -4,8 +4,8 @@ El encuadre es propio de cada corrida (la camara se re-monta en cada sesion),
 asi que esto se hace una vez **por corrida**. Hay tres caminos, y los tres
 escriben exactamente la misma configuracion:
 
-* **Interactivo** (default): abre un fotograma con OpenCV y se arrastra un
-  rectangulo ajustado al numero (``cv2.selectROI``).
+* **Interactivo** (default): abre la UI de ``calib_ui`` sobre un fotograma:
+  rectangulo amarillo ajustado al numero, rotacion, celdas, punto y signo.
 * **No interactivo**: ``--roi x,y,w,h``, util para re-calibrar desde un script,
   para los tests, o cuando no hay entorno grafico disponible.
 * **Automatico**: ``--auto`` registra el fotograma de esta corrida contra
@@ -39,6 +39,7 @@ from .imaging import (
     draw_overlay,
     load_color,
     load_gray,
+    rotate,
     shifted,
 )
 from .project import CALIB_DIR, CalibPaths
@@ -63,16 +64,45 @@ def pick_reference_frame(frames_dir: Path | str, explicit: str | None = None) ->
     return frames[len(frames) // 2]
 
 
-def refine_roi(gray: np.ndarray, roi: ROI, polarity: str, margin: int = 2) -> ROI:
+def refine_roi(
+    gray: np.ndarray,
+    roi: ROI,
+    polarity: str,
+    margin: int = 2,
+    n_digits: int | None = None,
+    sign: bool = False,
+) -> ROI:
     """Ajusta la ROI al bounding box real de la tinta, con un margen chico.
 
     Deja el rectangulo pegado al numero aunque el arrastre a mano haya sido
     generoso, que es lo que hace que el reparto uniforme de slots caiga bien.
+
+    Con ``sign`` la celda del signo queda vacia cuando el valor es positivo, asi
+    que el bounding box de la tinta no la incluye (o incluye solo el ``-``). Se
+    ajusta entonces a los **caracteres altos** (digitos) y se extiende una celda
+    a la izquierda: la ROI sale igual con fotogramas positivos y negativos.
     """
     crop = roi.crop(gray)
     if crop.size == 0:
         return roi
     ink = binarize(crop, polarity)
+    if sign and n_digits and n_digits > 1:
+        n, _, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+        comps = stats[1:]
+        if len(comps) == 0:
+            return roi
+        tall = comps[comps[:, cv2.CC_STAT_HEIGHT] >= 0.5 * comps[:, cv2.CC_STAT_HEIGHT].max()]
+        x0 = int(tall[:, cv2.CC_STAT_LEFT].min())
+        x1 = int((tall[:, cv2.CC_STAT_LEFT] + tall[:, cv2.CC_STAT_WIDTH]).max()) - 1
+        y0 = int(tall[:, cv2.CC_STAT_TOP].min())
+        y1 = int((tall[:, cv2.CC_STAT_TOP] + tall[:, cv2.CC_STAT_HEIGHT]).max()) - 1
+        cell = (x1 - x0 + 1) / (n_digits - 1)
+        x0 = int(round(x0 - cell))
+        x = max(roi.x + x0 - margin, 0)
+        y = max(roi.y + y0 - margin, 0)
+        w = min(x1 - x0 + 1 + 2 * margin, gray.shape[1] - x)
+        h = min(y1 - y0 + 1 + 2 * margin, gray.shape[0] - y)
+        return ROI(x=x, y=y, w=w, h=h)
     ys, xs = np.nonzero(ink)
     if xs.size == 0:
         return roi
@@ -83,18 +113,6 @@ def refine_roi(gray: np.ndarray, roi: ROI, polarity: str, margin: int = 2) -> RO
     w = min(x1 - x0 + 1 + 2 * margin, gray.shape[1] - x)
     h = min(y1 - y0 + 1 + 2 * margin, gray.shape[0] - y)
     return ROI(x=x, y=y, w=w, h=h)
-
-
-def _select_roi_interactive(image: np.ndarray, title: str) -> ROI:
-    print(f"  Arrastra el rectangulo sobre {title}, ENTER para confirmar, c para cancelar.")
-    x, y, w, h = cv2.selectROI("spectro calibrate", image, showCrosshair=True)
-    cv2.destroyAllWindows()
-    return ROI(x=int(x), y=int(y), w=int(w), h=int(h))
-
-
-def _ask_int(prompt: str, default: int) -> int:
-    raw = input(f"  {prompt} [{default}]: ").strip()
-    return int(raw) if raw else default
 
 
 def _calib_paths(args: argparse.Namespace) -> CalibPaths:
@@ -154,8 +172,8 @@ def auto_calibrate(args: argparse.Namespace) -> int:
     print(f"== calibrate --auto ==\n  fotograma de esta corrida: {frame_path}")
     print(f"  referencia: {calib.reference}")
 
-    reference = load_gray(calib.reference)
-    gray = load_gray(frame_path)
+    reference = rotate(load_gray(calib.reference), ref_cfg.rotation_deg)
+    gray = rotate(load_gray(frame_path), ref_cfg.rotation_deg)
     if gray.shape != reference.shape:
         print(
             f"  ERROR: la referencia es {reference.shape[1]}x{reference.shape[0]} y este "
@@ -191,6 +209,7 @@ def auto_calibrate(args: argparse.Namespace) -> int:
 
     cfg = Config.load_or_default(args.config)
     cfg.roi = roi
+    cfg.rotation_deg = ref_cfg.rotation_deg
     cfg.digits = ref_cfg.digits
     cfg.templates = ref_cfg.templates
     cfg.qc.anchor = nuevo_anchor
@@ -204,7 +223,9 @@ def auto_calibrate(args: argparse.Namespace) -> int:
     print(f"  ROI {roi.as_tuple()}, ancla {nuevo_anchor.as_tuple()}")
     print(f"  guardado en {args.config}")
 
-    _write_overlay(args, load_color(frame_path), roi, cfg.digits, nuevo_anchor)
+    _write_overlay(
+        args, rotate(load_color(frame_path), cfg.rotation_deg), roi, cfg.digits, nuevo_anchor
+    )
     if getattr(args, "promote", False):
         _promote(calib, cfg, frame_path)
     return 0
@@ -259,20 +280,55 @@ def _calibrate_manual(args: argparse.Namespace) -> int:
     """Camino interactivo / ``--roi``: fija la ROI sobre un fotograma concreto."""
     frame_path = pick_reference_frame(args.frames_dir, args.frame)
     print(f"== calibrate ==\n  fotograma de referencia: {frame_path}")
-    color = load_color(frame_path)
-    gray = load_gray(frame_path)
-
     cfg = Config.load_or_default(args.config)
     interactive = args.roi is None
+    rotation = args.rotate if getattr(args, "rotate", None) is not None else cfg.rotation_deg
+    raw_color = load_color(frame_path)
 
-    # -- ROI del numero
+    # -- ROI del numero (y, en la UI, rotacion / celdas / punto / signo)
+    ui_n = ui_dec = None
+    ui_sign = False
+    ui_final = False  # la UI ya entrego la ROI ajustada: no refinar dos veces
     if interactive:
-        roi = _select_roi_interactive(color, "el numero de absorbancia (ajustado)")
-        if not roi.is_valid():
-            print("  Seleccion vacia; no se cambio nada.")
+        from .calib_ui import UIState, run_calibration_ui
+        from .library import load
+
+        calib = _calib_paths(args)
+        try:
+            library = load(calib.templates)
+        except FileNotFoundError:
+            library = None
+        frames = sorted(Path(args.frames_dir).glob("t_*.jpg"))
+
+        print("  Abriendo la UI: arrastra el rectangulo amarillo sobre el numero, "
+              "ENTER confirma, ESC cancela.")
+        res = run_calibration_ui(
+            raw_color,
+            initial=UIState(
+                rotation=rotation,
+                n_digits=cfg.digits.n_digits,
+                decimal_after=cfg.digits.decimal_after,
+                sign=cfg.digits.sign_slot is not None,
+                refine=not getattr(args, "no_refine", False),
+            ),
+            library=library,
+            templates_cfg=cfg.templates,
+            frame_paths=frames,
+        )
+        if res is None:
+            print("  Seleccion vacia o cancelada; no se cambio nada.")
             return 2
+        st = res.state
+        roi, rotation, ui_final = res.roi, st.rotation, True
+        ui_n, ui_dec, ui_sign = st.n_digits, st.decimal_after, st.sign
     else:
         roi = args.roi
+    color = rotate(raw_color, rotation)
+    gray = rotate(load_gray(frame_path), rotation)
+    if rotation:
+        print(f"  rotacion: {rotation:+.1f} grados")
+
+    sign = bool(getattr(args, "sign", False)) or ui_sign
 
     # -- polaridad
     polarity = args.polarity
@@ -280,23 +336,24 @@ def _calibrate_manual(args: argparse.Namespace) -> int:
         polarity = detect_polarity(roi.crop(gray))
         print(f"  polaridad detectada: {polarity}")
 
-    if not getattr(args, "no_refine", False):
-        roi = refine_roi(gray, roi, polarity)
+    n_digits = args.n_digits if args.n_digits is not None else ui_n
+    if n_digits is None:
+        n_digits = DigitsConfig().n_digits + (1 if sign else 0)
+    if ui_final:
+        print(f"  ROI final (la de la UI): {roi.as_tuple()}")
+    elif not getattr(args, "no_refine", False):
+        roi = refine_roi(gray, roi, polarity, n_digits=n_digits, sign=sign)
         print(f"  ROI ajustada a la tinta: {roi.as_tuple()}")
     else:
         print(f"  ROI tal cual (--no-refine): {roi.as_tuple()}")
 
     # -- slots
-    digits = DigitsConfig(polarity=polarity)
-    if args.n_digits is not None:
-        digits.n_digits = args.n_digits
-    elif interactive:
-        print("  Contando celdas de caracter: en 0.597 el punto ocupa una celda -> 5")
-        digits.n_digits = _ask_int("Cantidad de celdas (digitos + punto)", 5)
+    digits = DigitsConfig(polarity=polarity, n_digits=n_digits)
+    digits.sign_slot = 0 if sign else None
     if args.decimal_after is not None:
         digits.decimal_after = args.decimal_after
-    elif interactive:
-        digits.decimal_after = _ask_int("Digitos antes del punto decimal", 1)
+    elif ui_dec is not None:
+        digits.decimal_after = ui_dec
 
     if args.splits:
         cuts = [int(v) for v in args.splits.split(",")]
@@ -314,6 +371,7 @@ def _calibrate_manual(args: argparse.Namespace) -> int:
     print(
         f"  {digits.n_digits} slots, separador(es) en {digits.separator_slots or 'ninguno'}, "
         f"punto decimal despues de {digits.decimal_after} digito(s)"
+        + (", signo en la celda 0" if sign else "")
     )
 
     # -- ancla estatica para detectar movimiento de camara
@@ -323,6 +381,7 @@ def _calibrate_manual(args: argparse.Namespace) -> int:
         print(f"  ancla automatica (maxima estructura fuera de la ROI): {anchor.as_tuple()}")
 
     cfg.roi = roi
+    cfg.rotation_deg = float(rotation)
     cfg.digits = digits
     cfg.qc.anchor = anchor
     # La ROI se definio sobre este fotograma: es el origen de coordenadas contra
@@ -351,10 +410,12 @@ def _infer_separator_slots(gray: np.ndarray, roi: ROI, digits: DigitsConfig) -> 
     boxes = slot_boxes(roi.w, digits)
     ink = [float(np.count_nonzero(crop[:, x0:x1])) / max((x1 - x0) * crop.shape[0], 1)
            for x0, x1 in boxes]
-    if not ink:
+    # La celda del signo suele estar vacia (valor positivo): no es el punto.
+    candidates = [i for i in range(len(ink)) if i != digits.sign_slot]
+    if not candidates:
         return []
-    lo = min(ink)
-    median = float(np.median(ink))
+    lo = min(ink[i] for i in candidates)
+    median = float(np.median([ink[i] for i in candidates]))
     if lo < 0.35 * median:
-        return [int(np.argmin(ink))]
+        return [min(candidates, key=lambda i: ink[i])]
     return []

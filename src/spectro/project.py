@@ -20,12 +20,13 @@ Interfaz publica:
     list_runs(...)                          -> list[str]
     seed_run_config(calib_cfg, video, fps)  -> Config
     calib_recipe(run_cfg)                   -> Config
+    RunContext.load(run_paths, calib_paths) -> RunContext
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import ROI, Config, QCConfig
@@ -167,6 +168,29 @@ class RunPaths:
     def glyph_sheet(self) -> Path:
         return self.out / "glifos.png"
 
+    @property
+    def truth(self) -> Path:
+        """Valores reales escritos a mano por ``teach`` (``archivo,valor``)."""
+        return self.root / "truth.csv"
+
+    @property
+    def teach_report(self) -> Path:
+        return self.out / "teach_report.csv"
+
+    @property
+    def test(self) -> Path:
+        """Conjunto de prueba (``archivo,valor``): nunca entra a la biblioteca."""
+        return self.root / "test.csv"
+
+    @property
+    def test_report(self) -> Path:
+        return self.out / "test_report.csv"
+
+    @property
+    def history(self) -> Path:
+        """Una fila por evaluacion: la curva de aprendizaje de las rondas."""
+        return self.out / "teach_history.csv"
+
     def exists(self) -> bool:
         return self.config.exists()
 
@@ -228,3 +252,82 @@ def calib_recipe(run_config: Config) -> Config:
     for campo in _PER_RUN_QC_FIELDS:
         setattr(cfg.qc, campo, getattr(limpios, campo))
     return cfg
+
+
+@dataclass
+class RunContext:
+    """Todo lo que ``teach`` necesita de una corrida, cargado por un solo camino.
+
+    Junta la config de la corrida, la carpeta de fotogramas, el corrimiento de camara
+    que midio ``qc`` y las muestras de entrenamiento y de prueba. Las rutas salen de
+    ``RunPaths``; los argumentos con nombre permiten apuntar una a otra carpeta, como
+    un flag explicito que le gana a lo derivado.
+    """
+
+    paths: RunPaths | None
+    cfg: Config
+    frames_dir: Path
+    qc_report: Path
+    #: ``{fotograma: (dx, dy)}`` de ``qc``; vacio si no hay reporte.
+    offsets: dict[str, tuple[int, int]]
+    train: list
+    test: list
+    templates_dir: Path
+    _names: list[str] | None = field(default=None, init=False, repr=False)
+
+    @property
+    def run_id(self) -> str:
+        return self.paths.id if self.paths is not None else ""
+
+    @property
+    def has_qc(self) -> bool:
+        """Hay un reporte de QC con filas: sin el no se compensa la deriva de camara."""
+        return bool(self.offsets)
+
+    @classmethod
+    def load(
+        cls,
+        run_paths: RunPaths | None,
+        calib_paths: CalibPaths | None = None,
+        *,
+        config: Path | str | None = None,
+        frames_dir: Path | str | None = None,
+        qc_report: Path | str | None = None,
+        truth: Path | str | None = None,
+        test: Path | str | None = None,
+        templates_dir: Path | str | None = None,
+    ) -> "RunContext":
+        from .qc import load_offsets
+        from .teach import load_truth
+
+        qc_path = Path(qc_report) if qc_report is not None else run_paths.qc_report
+        templates = templates_dir if templates_dir is not None else (
+            calib_paths.templates if calib_paths is not None else run_paths.templates
+        )
+        return cls(
+            paths=run_paths,
+            cfg=Config.load(config if config is not None else run_paths.config),
+            frames_dir=Path(frames_dir if frames_dir is not None else run_paths.frames),
+            qc_report=qc_path,
+            offsets=load_offsets(qc_path),
+            train=load_truth(truth if truth is not None else run_paths.truth),
+            test=load_truth(test if test is not None else run_paths.test),
+            templates_dir=Path(templates),
+        )
+
+    def names(self) -> list[str]:
+        """Los fotogramas que pasaron QC; sin reporte, todos los del indice de la carpeta."""
+        from .extract import index_from_dir
+        from .qc import load_offsets
+
+        if self._names is None:
+            self._names = list(load_offsets(self.qc_report, passed_only=True)) or [
+                e.archivo for e in index_from_dir(self.frames_dir)
+            ]
+        return self._names
+
+    def items(self) -> list[tuple[str, float]]:
+        """``(fotograma, segundo)`` de ``names()``, la entrada de las sugerencias."""
+        from .extract import time_from_name
+
+        return [(n, time_from_name(n)) for n in self.names()]

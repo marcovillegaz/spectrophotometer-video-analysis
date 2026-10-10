@@ -9,6 +9,7 @@ Interfaz publica:
     Config.save(path)   -> None
     Config.default()    -> Config
     DEFAULT_CONFIG_PATH
+    DEFAULT_MAX_PER_LABEL
 """
 
 from __future__ import annotations
@@ -19,6 +20,10 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG_PATH = Path("config.json")
+
+#: Tope de variantes por caracter en la biblioteca (lo usan el CLI de ``teach`` y la UI). Vive
+#: aca, y no en ``teach.py``, para que el parser del CLI no importe cv2; ``teach`` lo reexporta.
+DEFAULT_MAX_PER_LABEL = 3
 
 
 @dataclass
@@ -62,6 +67,11 @@ class DigitsConfig:
     decimal_after: int = 1
     #: "light_on_dark" (display luminoso) o "dark_on_light" (LCD clasico).
     polarity: str = "light_on_dark"
+    #: Indice de la celda del signo (normalmente 0), o None si el display no
+    #: muestra signo. Esa celda queda vacia cuando el valor es positivo.
+    sign_slot: int | None = None
+    #: Fraccion de tinta por debajo de la cual la celda del signo se toma vacia.
+    sign_max_ink: float = 0.03
 
     def resolved_splits(self, roi_width: int) -> list[int]:
         """Devuelve los cortes efectivos, generando el reparto uniforme si hace falta."""
@@ -73,7 +83,26 @@ class DigitsConfig:
     def digit_slots(self) -> list[int]:
         """Indices de los slots que si aportan un digito al numero."""
         seps = set(self.separator_slots or [])
+        if self.sign_slot is not None:
+            seps.add(self.sign_slot)
         return [i for i in range(self.n_digits) if i not in seps]
+
+    def expected_chars(self, slot: int) -> str:
+        """Caracteres que puede mostrar el slot: ``-`` o vacio (signo), ``.`` (separador) o digitos."""
+        if slot == self.sign_slot:
+            return "- "
+        if slot in (self.separator_slots or []):
+            return "."
+        return "0123456789"
+
+    def required_chars(self) -> frozenset[str]:
+        """Caracteres que la biblioteca tiene que poder leer con esta geometria.
+
+        Sale de ``expected_chars`` de cada slot (sin el vacio). El punto se pide siempre,
+        haya o no separadores configurados: es el criterio que ya aplicaba ``teach``.
+        """
+        chars = {c for i in range(self.n_digits) for c in self.expected_chars(i)}
+        return frozenset(chars - {" "}) | {"."}
 
 
 @dataclass
@@ -143,6 +172,9 @@ class Config:
 
     video: str = ""
     fps: float = 1.0
+    #: Rotacion aplicada a cada fotograma al cargarlo (grados, antihorario) para
+    #: dejar el numero horizontal. ROI y ancla estan en coordenadas ya rotadas.
+    rotation_deg: float = 0.0
     roi: ROI = field(default_factory=ROI)
     digits: DigitsConfig = field(default_factory=DigitsConfig)
     templates: TemplateConfig = field(default_factory=TemplateConfig)

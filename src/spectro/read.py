@@ -25,6 +25,7 @@ Interfaz publica:
 from __future__ import annotations
 
 import csv
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,9 +33,9 @@ import numpy as np
 
 from .config import Config
 from .extract import FRAMES_DIR, load_roi_sidecar
-from .imaging import binarize, crop_for_reading, load_gray, ncc, normalize_glyph, slot_boxes
+from .imaging import cell_glyphs, load_frame, ncc
 from .qc import QC_REPORT, load_qc_report, write_qc_report
-from .templates import TEMPLATES_DIR, Template, load_templates
+from .library import TEMPLATES_DIR, Template, load, warn_missing_sign
 
 #: Default relativo a la raiz de la corrida; ver ``extract.FRAMES_DIR``.
 READINGS = Path("out/readings.csv")
@@ -55,14 +56,20 @@ class Reading:
     dy: int = 0
     estado: str = "ok"
     scores: list[float] = field(default_factory=list)
+    #: Minimo del margen entre la mejor etiqueta y la mejor de otra etiqueta, por celda.
+    #: Junto con ``confianza`` es lo que decide si una lectura se acepta.
+    margen: float = 0.0
 
     @property
     def is_valid(self) -> bool:
         return self.estado == "ok" and self.valor is not None
 
 
-def assemble(digits: str, decimal_after: int) -> float:
-    """Arma el numero con el punto decimal fijo: ``"0597", 1 -> 0.597``."""
+def assemble(digits: str, decimal_after: int, negative: bool = False) -> float:
+    """Arma el numero con el punto decimal fijo: ``"0597", 1 -> 0.597``.
+
+    ``negative`` aplica el signo; ``-0.000`` se normaliza a ``0.0``.
+    """
     if not digits or not digits.isdigit():
         raise ValueError(f"Cadena de digitos invalida: {digits!r}")
     if not 0 <= decimal_after <= len(digits):
@@ -71,7 +78,8 @@ def assemble(digits: str, decimal_after: int) -> float:
         )
     entero = digits[:decimal_after] or "0"
     decimales = digits[decimal_after:]
-    return float(f"{entero}.{decimales}") if decimales else float(entero)
+    valor = float(f"{entero}.{decimales}") if decimales else float(entero)
+    return -valor if negative and valor != 0.0 else valor
 
 
 def match_slot(glyph: np.ndarray, library: list[Template]) -> tuple[str, float, float]:
@@ -104,16 +112,37 @@ def read_frame(
     mueve con la escena en vez de quedarse clavada en coordenadas absolutas.
     """
     reading = Reading(archivo="", t_s=0.0, indice=0)
-    roi = crop_for_reading(gray, cfg, frames_roi, offset)
-    binary = binarize(roi, cfg.digits.polarity)
     separators = set(cfg.digits.separator_slots or [])
+    sign_slot = cfg.digits.sign_slot
+    negative = False
 
     chars: list[str] = []
     scores: list[float] = []
-    for i, (x0, x1) in enumerate(slot_boxes(roi.shape[1], cfg.digits)):
-        glyph = normalize_glyph(binary[:, x0:x1], cfg.templates.size)
-        label, best, margin = match_slot(glyph, library)
+    margins: list[float] = []
+    for i, cell in enumerate(cell_glyphs(gray, cfg, offset, frames_roi)):
+        if i == sign_slot:
+            # Se decide por tinta, no por NCC: una celda vacia con ruido no
+            # correlaciona con nada y seria un falso descarte.
+            if cell.is_empty(cfg.digits):
+                chars.append(" ")
+                scores.append(1.0)
+                continue
+            label, best, margin = match_slot(cell.image, library)
+            scores.append(best)
+            margins.append(margin)
+            chars.append(label)
+            if (
+                label != "-"
+                or best < cfg.templates.min_score
+                or margin < cfg.templates.min_margin
+            ):
+                reading.estado = "low_confidence"
+            else:
+                negative = True
+            continue
+        label, best, margin = match_slot(cell.image, library)
         scores.append(best)
+        margins.append(margin)
         chars.append(label)
         if best < cfg.templates.min_score or margin < cfg.templates.min_margin:
             reading.estado = "low_confidence"
@@ -126,10 +155,12 @@ def read_frame(
     reading.caracteres = "".join(chars)
     reading.scores = scores
     reading.confianza = float(min(scores)) if scores else 0.0
+    reading.margen = float(min(margins)) if margins else 1.0
     if reading.estado == "ok":
-        digits = "".join(c for i, c in enumerate(chars) if i not in separators)
+        skip = separators | ({sign_slot} if sign_slot is not None else set())
+        digits = "".join(c for i, c in enumerate(chars) if i not in skip)
         try:
-            reading.valor = assemble(digits, cfg.digits.decimal_after)
+            reading.valor = assemble(digits, cfg.digits.decimal_after, negative)
         except ValueError:
             reading.estado = "low_confidence"
     return reading
@@ -169,22 +200,28 @@ def run_read(
 ) -> list[Reading]:
     """Lee todos los fotogramas que pasaron QC y actualiza el libro mayor."""
     frames_dir = Path(frames_dir)
-    library = load_templates(templates_dir)
+    library = load(templates_dir)
     qc_rows = load_qc_report(qc_path)
     frames_roi = load_roi_sidecar(frames_dir)
     etiquetas = sorted({t.label for t in library})
     if verbose:
         print(f"== read ==\n  biblioteca: {len(library)} plantillas ({', '.join(etiquetas)})")
+    aviso = warn_missing_sign(cfg, library)
+    if aviso:  # solo avisa: las lecturas y el codigo de salida no cambian
+        print("  " + aviso.replace("\n", "\n  "), file=sys.stderr)
 
     readings: list[Reading] = []
     for row in qc_rows:
         if not row.passed_qc:
             continue
         try:
-            gray = load_gray(frames_dir / row.archivo)
+            gray = load_frame(frames_dir / row.archivo, cfg)
         except RuntimeError:
             continue
-        reading = read_frame(gray, cfg, library, frames_roi, row.offset)
+        try:
+            reading = read_frame(gray, cfg, library, frames_roi, row.offset)
+        except ValueError:  # la ROI no cabe en el fotograma: lectura descartada
+            reading = Reading(row.archivo, row.t_s, row.indice, estado="roi_fuera")
         reading.archivo, reading.t_s, reading.indice = row.archivo, row.t_s, row.indice
         reading.dx, reading.dy = row.dx, row.dy
         readings.append(reading)
@@ -218,7 +255,8 @@ def write_readings(readings: list[Reading], path: Path | str = READINGS) -> Path
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(
-            ["archivo", "t_s", "indice", "valor", "confianza", "caracteres", "dx", "dy", "estado"]
+            ["archivo", "t_s", "indice", "valor", "confianza", "margen", "caracteres", "dx", "dy",
+             "estado"]
         )
         for r in readings:
             writer.writerow(
@@ -228,6 +266,7 @@ def write_readings(readings: list[Reading], path: Path | str = READINGS) -> Path
                     r.indice,
                     "" if r.valor is None else f"{r.valor:.6g}",
                     f"{r.confianza:.4f}",
+                    f"{r.margen:.4f}",
                     r.caracteres,
                     r.dx,
                     r.dy,
@@ -251,6 +290,7 @@ def load_readings(path: Path | str = READINGS) -> list[Reading]:
                     indice=int(r["indice"]),
                     valor=float(r["valor"]) if r["valor"] else None,
                     confianza=float(r["confianza"]),
+                    margen=float(r.get("margen") or 0.0),
                     caracteres=r["caracteres"],
                     dx=int(r.get("dx", 0) or 0),
                     dy=int(r.get("dy", 0) or 0),

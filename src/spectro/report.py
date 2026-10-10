@@ -30,7 +30,7 @@ import cv2
 
 from .config import Config
 from .extract import FRAMES_DIR, format_hhmmss, load_roi_sidecar
-from .imaging import contact_sheet, crop_for_reading, load_color
+from .imaging import contact_sheet, crop_for_reading, load_frame
 from .qc import QC_REPORT, load_qc_report
 from .read import READINGS, load_readings
 
@@ -104,6 +104,8 @@ def plot_preview(readings, cfg: Config, path: Path | str) -> Path | None:
     fig, ax = plt.subplots(figsize=(11, 4.5), dpi=130)
     ax.plot(xs, ys, lw=1.0, color="#1f4e79")
     ax.scatter(xs, ys, s=3, color="#1f4e79", alpha=0.5)
+    if min(ys) < 0:
+        ax.axhline(0.0, color="#888888", lw=0.8, ls="--")
     ax.set_xlabel("t_exp [s]")
     ax.set_ylabel("Absorbancia [Abs]")
     ax.set_title(f"Absorbancia vs tiempo  ({len(valid)} puntos validos)")
@@ -128,7 +130,7 @@ def build_contact_sheet(
         frame = frames_dir / r.archivo
         if not frame.exists():
             continue
-        crop = crop_for_reading(load_color(frame), cfg, frames_roi, (r.dx, r.dy))
+        crop = crop_for_reading(load_frame(frame, cfg, color=True), cfg, frames_roi, (r.dx, r.dy))
         tiles.append(cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST))
         labels.append(f"{r.valor:.3f} c={r.confianza:.2f} {r.estado}")
     if not tiles:
