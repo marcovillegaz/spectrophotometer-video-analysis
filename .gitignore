@@ -30,3 +30,14 @@ desktop.ini
 
 # Grafo de conocimiento: cache regenerable de graphify
 graphify-out/
+
+# Excepciones personales de Claude Code (el resto de .claude/ se versiona)
+.claude/settings.local.json
+
+# Respaldos automaticos de la biblioteca de plantillas
+calib/.backups/
+
+# Cobertura de pytest-cov
+.coverage
+htmlcov/
+coverage.xml
