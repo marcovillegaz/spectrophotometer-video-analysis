@@ -13,13 +13,13 @@ Actualizado: 2026-10-10, al cierre de la Fase 1. El plan completo está en `C:\U
 | 4 | Tests nuevos y piso de cobertura | pendiente |
 | 5 | Documentación con fuente única | pendiente |
 | 6 | Entrenamiento final (lo hacés vos) | pendiente |
-| cierre | Ejecutar los commits documentados | pendiente |
+| cierre | Commitear salidas y datos del entrenamiento (`runs/*/out/`, `calib/templates/`, `truth.csv`/`test.csv`, `batch_report.csv`) | pendiente |
 
 **Medido al cierre de la Fase 1:** 419 tests en verde y 2 rotos a propósito (`tests/test_docs.py`, porque el README todavía cita el comando `templates`, que ya no existe; se arregla en la Fase 5). Cobertura de partida (Fase 0): 73 %. `read` sobre las 4 corridas es idéntico byte a byte al golden de la Fase 0.
 
 ### Lo que no hay que perder de vista
 
-- **Nada está commiteado.** Todo el trabajo (previo al plan y de las fases 0 y 1) está sin commit. Los commits propuestos están en `COMMITS_PENDIENTES.md` y se ejecutan al final con `/commit`. La red de seguridad son las copias en `old_data/`.
+- **Lo hecho hasta la Fase 1 está commiteado** (12 commits, `aea57e4..72dab9e`, 2026-10-10). Quedan sin commitear las salidas `runs/*/out/` (se commitean al final, tras la Fase 6). `COMMITS_PENDIENTES.md` es local (excluido en `.git/info/exclude`) y solo sirve para las fases siguientes. Las copias de `old_data/` siguen siendo la red de seguridad.
 - **La biblioteca actual no tiene la plantilla `-`.** Con ella, `read` descarta ~90 % de 8102 y 8106 (medido; ver `docs/AUDITORIA_v5.md` §4.1). Hasta la Fase 6 las lecturas de esas dos corridas no son representativas.
 - **`old_data/` se conserva** (decisión tuya). Contiene `golden_f0/` (con `SHA256SUMS.txt`), `snapshot_f0_20261010/`, `snapshot_f1_20261010/` y el respaldo viejo.
 - `calib/.backups/pre_v5_20261010/` es la biblioteca previa al plan. La poda automática (últimos 5) no lo toca.
@@ -133,7 +133,7 @@ Estructura de fuente única (decidida):
 
 ### Cierre — commits
 
-Seguir `COMMITS_PENDIENTES.md` en orden con `/commit`: estado previo (0.1–0.10), `.gitattributes` y herramientas (1.x), Fase 1 (2.x), y las que se agreguen. Los datos del entrenamiento (`calib/templates/`, `truth.csv`/`test.csv`, `runs/*/out/`, `runs/batch_report.csv`) van al final. Después borrar `COMMITS_PENDIENTES.md` y, si ya no hacen falta, los `old_data/snapshot_*`.
+Desde la Fase 2 se commitea al cerrar cada fase (con `/commit`, pidiendo el plan antes). Al final, un commit con los datos del entrenamiento: `calib/templates/`, `truth.csv`/`test.csv`, `runs/*/out/` y `runs/batch_report.csv`. Después borrar `COMMITS_PENDIENTES.md` y, si ya no hacen falta, los `old_data/snapshot_*`.
 
 ## 4. Decisiones que siguen abiertas
 
@@ -147,7 +147,7 @@ Seguir `COMMITS_PENDIENTES.md` en orden con `/commit`: estado previo (0.1–0.10
 
 ## 5. Riesgos
 
-- **Todo sin commitear.** Un `git clean` o un fallo de disco lo perdería. Mitigación: los snapshots de `old_data/`. Si preferís cortar el riesgo antes, es razonable ejecutar los commits 0.x y 1.x ahora y seguir con las fases en commits normales; el plan los pospuso por decisión tuya.
+- **Los commits 3 a 5 no son autónomos** (código y tests de varias fases comparten archivos): `git bisect` entre ellos no funciona. Desde la Fase 2 los commits se hacen al cerrar cada fase y sí quedan sanos.
 - **La Fase 2 rompe tests por diseño.** Si los tests viejos no se migran a la vez que el código, la compuerta se vuelve ambigua (no se sabe si un rojo es regresión o migración pendiente).
 - **Las UIs no tienen tests del loop.** Un error en la Fase 3 puede pasar la suite y romper la ventana. Por eso la prueba manual de la Compuerta 3 no es opcional.
 - **El golden tarda ~25 minutos.** Correrlo en segundo plano mientras se revisa otra cosa; 8110 sola sirve de prueba rápida.
