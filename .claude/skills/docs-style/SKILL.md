@@ -55,14 +55,19 @@ Cerrá los procesos largos con un **ejemplo resuelto** sobre datos reales y una 
 
 | documento | contiene | no contiene |
 |---|---|---|
-| `README.md` | uso y **referencia**: instalación, carpetas, comandos y flags, formatos de salida | el porqué extenso de las decisiones |
-| `docs/GUIA_CALIBRACION.md` | el **proceso** de calibración paso a paso, con fundamentos, ejemplo resuelto y diagnóstico | la lista completa de flags |
-| `docs/ARQUITECTURA.md` | **decisiones de diseño**: qué se decidió, por qué y qué riesgo cubre; tabla de módulos | pasos de uso |
-| `docs/CONFIG.md` | cada campo de `config.json` | procesos |
-| `CLAUDE.md` | memoria para quien trabaja en el código (agentes, convenciones, seguridad) | explicaciones para usuarios |
-| `PLAN*.md` | planes de trabajo; son historia | documentación vigente |
+| `README.md` | portada y **único índice** de documentos (tabla «Quiero… → leé esto») | contenido que ya vive en `docs/` |
+| `docs/empezar/` | instalar y la primera corrida | referencia completa de flags |
+| `docs/calibrar/` | el **proceso** de calibración paso a paso, con fundamentos; el ejemplo resuelto va aparte | la lista completa de flags |
+| `docs/diagnosticar/problemas.md` | síntomas → causa → qué hacer (única casa del diagnóstico) | pasos de calibración |
+| `docs/referencia/` | comandos y flags, formatos de salida, carpetas y `config.json` | procesos |
+| `docs/diseno/` | arquitectura (módulos, contratos) y **decisiones de diseño**: qué se decidió, por qué y qué riesgo cubre | pasos de uso |
+| `docs/contribuir.md` | tests, flujo con agentes, convenciones y trampas del entorno | explicaciones para usuarios |
+| `CLAUDE.md` | memoria para quien trabaja en el código (invariantes, seguridad de datos) | explicaciones para usuarios |
+| `docs/plans/`, `docs/historia/` | planes de trabajo y auditorías; son historia | documentación vigente |
 
-**No dupliques:** una explicación vive en un solo documento y los demás la **enlazan** (`[guía](docs/GUIA_CALIBRACION.md)`). Un resumen de dos líneas con enlace sí; copiar la sección, no.
+Un documento nuevo exige agregar su fila al índice del `README.md`.
+
+**No dupliques:** una explicación vive en un solo documento y los demás la **enlazan** (`[guía](../calibrar/guia.md)`). Un resumen de dos líneas con enlace sí; copiar la sección, no.
 
 ## Formato
 

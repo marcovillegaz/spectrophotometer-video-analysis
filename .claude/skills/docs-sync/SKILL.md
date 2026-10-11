@@ -13,13 +13,13 @@ La documentación se desactualiza cada vez que cambia el código: un flag que ya
 
 | lo que cambió | documento y sección a revisar |
 |---|---|
-| `cli.py`, `teach_cli.py` (comandos, flags, mensajes) | `README.md` → *Referencia de comandos*, *Flujo de calibración*; `docs/GUIA_CALIBRACION.md` → bloques de comandos y *Referencia rápida* |
-| `config.py` (campos de `config.json`) | `docs/CONFIG.md` |
-| `project.py` (rutas, layout de carpetas) | `README.md` → *Estructura de carpetas*; `CLAUDE.md` → *Dónde vive cada dato* |
-| `teach.py`, `sampling.py`, `evaluation.py` (entrenamiento, muestreo, prueba) | `docs/GUIA_CALIBRACION.md` (pasos y fundamentos); `docs/ARQUITECTURA.md` (decisiones y tabla de módulos) |
-| `read.py`, `qc.py`, `report.py` (columnas de CSV, estados) | `README.md` → *Formato de salida* |
-| módulos nuevos o renombrados | `docs/ARQUITECTURA.md` → tabla de módulos; `CLAUDE.md` si cambia el mapa |
-| cantidad de tests | `README.md` → sección *Tests* |
+| `cli.py`, `teach_cli.py` (comandos, flags, mensajes) | `docs/referencia/comandos.md`; `docs/calibrar/guia.md` y `docs/empezar/primera-corrida.md` → bloques de comandos |
+| `config.py` (campos de `config.json`) | `docs/referencia/config.md` |
+| `project.py` (rutas, layout de carpetas) | `docs/referencia/carpetas.md` |
+| `teach.py`, `sampling.py`, `evaluation.py` (entrenamiento, muestreo, prueba) | `docs/calibrar/guia.md` (pasos y fundamentos); `docs/diseno/decisiones.md` y `docs/diseno/arquitectura.md` (decisiones y tabla de módulos) |
+| `read.py`, `qc.py`, `report.py` (columnas de CSV, estados) | `docs/referencia/salidas.md` |
+| módulos nuevos o renombrados | `docs/diseno/arquitectura.md` → tabla de módulos; `CLAUDE.md` si cambia el mapa |
+| cantidad de tests | `docs/contribuir.md` → sección *Tests* |
 | agentes o skills | `CLAUDE.md` → *Agentes* |
 
 ## 2. Correr el verificador

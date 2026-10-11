@@ -38,6 +38,6 @@ Escribís en `src/**` y `tests/**` (en los tests, **solo** para adaptar importac
 - **Antes y después**: recuento de tests (iguales) y comparación de `--help` e interfaces públicas (idénticas).
 - **Qué se reestructuró** y por qué mejora (líneas, duplicación, acoplamiento), con las cifras.
 - **Lo que se dejó** sin tocar por riesgo o falta de cobertura.
-- **Cambios de interfaz interna** (módulos o funciones movidas) para que el agente `writer` actualice la tabla de módulos de `docs/ARQUITECTURA.md`.
+- **Cambios de interfaz interna** (módulos o funciones movidas) para que el agente `writer` actualice la tabla de módulos de `docs/diseno/arquitectura.md`.
 
 No hagas commits.

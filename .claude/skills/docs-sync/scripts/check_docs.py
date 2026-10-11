@@ -15,7 +15,7 @@ Hace tres comprobaciones sobre ``README.md``, ``CLAUDE.md`` y ``docs/*.md``:
     python .claude/skills/docs-sync/scripts/check_docs.py            # revisa y resume
     python .claude/skills/docs-sync/scripts/check_docs.py --list     # lista los comandos encontrados
 
-Los ``PLAN*.md`` no se revisan: describen comandos futuros o ya reemplazados.
+Los planes (``docs/plans/``) y ``docs/historia/`` no se revisan: describen comandos futuros o ya reemplazados.
 Para que un ejemplo de documentacion no se analice (porque es una plantilla y no un comando
 real), usa una forma que contenga ``...``, ``…``, ``[`` o ``|``; esas lineas se omiten y se
 cuentan aparte.
@@ -35,6 +35,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[4]
 DOCUMENTOS = ["README.md", "CLAUDE.md"]
+SIN_REVISAR = {"historia", "plans"}
 _CERCA = re.compile(r"^\s*(`{3,}|~{3,})")
 _OMITIR = ("...", "…", "[", "|")
 _COMANDO = re.compile(
@@ -45,9 +46,16 @@ _PLACEHOLDER = re.compile(r"<[^<>\s]+>")
 
 
 def documentos(raiz: Path = RAIZ) -> list[Path]:
-    """Los .md que se revisan: README, CLAUDE y todo ``docs/``."""
+    """Los .md que se revisan: README, CLAUDE y todo ``docs/`` (subcarpetas incluidas).
+
+    Se excluyen ``docs/historia/`` y ``docs/plans/``: describen comandos y rutas de su época.
+    """
     out = [raiz / n for n in DOCUMENTOS if (raiz / n).exists()]
-    out += sorted((raiz / "docs").glob("*.md")) if (raiz / "docs").is_dir() else []
+    if (raiz / "docs").is_dir():
+        out += sorted(
+            p for p in (raiz / "docs").rglob("*.md")
+            if not set(p.relative_to(raiz / "docs").parts[:-1]) & SIN_REVISAR
+        )
     return out
 
 
