@@ -1,4 +1,4 @@
-"""``teach --build --all-runs``: una biblioteca compartida con las muestras de todas las corridas."""
+"""``teach train`` (sin corridas = todas): una biblioteca compartida con las muestras de todas las corridas."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def cli(p, *args):
 
 def test_junta_las_muestras_de_todas_las_corridas_sin_pedir_run(proyecto, capsys):
     p = proyecto
-    assert cli(p, "--build", "--all-runs") == 0
+    assert cli(p, "train") == 0
     salida = capsys.readouterr().out
     assert "r1" in salida and "r2" in salida and "12 lecturas exactas" in salida.replace(
         "leave-one-out sobre todas las corridas: ", "")
@@ -58,7 +58,7 @@ def test_nombres_repetidos_entre_corridas_no_se_pisan_en_el_leave_one_out(proyec
     fotogramas: sin identificador por corrida, validar el de r1 descartaria tambien el `3`
     de r2 y diria que "faltan" ejemplos."""
     p = proyecto
-    cli(p, "--build", "--all-runs")
+    cli(p, "train")
     salida = capsys.readouterr().out
     assert "sin ejemplos" not in salida
     with (p["r1"] / "out" / "teach_report.csv").open(encoding="utf-8") as fh:
@@ -83,7 +83,7 @@ def test_cada_corrida_se_recorta_con_su_propia_config(proyecto):
 
 def test_excluir_una_corrida_la_reserva_como_prueba(proyecto, capsys):
     p = proyecto
-    assert cli(p, "--build", "--all-runs", "--exclude-runs", "r2") == 0
+    assert cli(p, "train", "--exclude", "r2") == 0
     salida = capsys.readouterr().out
     assert "excluidas" in salida and "r2" in salida
     assert not (p["r2"] / "out" / "teach_report.csv").exists()
@@ -103,27 +103,28 @@ def test_la_prueba_nunca_entra(proyecto, monkeypatch):
         return original(samples, *a, **k)
 
     monkeypatch.setattr(T, "build_pool", espia)
-    assert cli(p, "--build", "--all-runs") == 0
+    assert cli(p, "train") == 0
     assert vistos and nombre not in vistos
 
 
 def test_check_valida_sin_escribir_la_biblioteca(proyecto):
-    assert cli(proyecto, "--check", "--all-runs") == 0
+    assert cli(proyecto, "check") == 0
     assert not proyecto["lib"].exists() or not list(proyecto["lib"].glob("*.png"))
 
 
 def test_keep_suma_sin_duplicar_entre_corridas(proyecto):
     p = proyecto
-    cli(p, "--build", "--all-runs")
+    cli(p, "train")
     antes = sorted(f.name for f in p["lib"].glob("*.png"))
-    cli(p, "--build", "--all-runs", "--keep")
+    cli(p, "train", "--keep")
     assert sorted(f.name for f in p["lib"].glob("*.png")) == antes
 
 
 def test_errores_claros(proyecto, tmp_path, capsys):
     p = proyecto
-    assert cli(p, "--all-runs") == 1
-    assert "--build" in capsys.readouterr().err
+    assert cli(p, "train", "--exclude", "r1", "r2") == 1          # todo excluido: nada que entrenar
+    assert "muestras de entrenamiento" in capsys.readouterr().err
+    assert not p["lib"].exists() or not list(p["lib"].glob("*.png"))
     vacio = ["--runs-dir", str(tmp_path / "vacio"), "--calib-dir", str(tmp_path / "calib")]
-    assert main(vacio + ["teach", "--build", "--all-runs"]) == 1
-    assert "truth.csv" in capsys.readouterr().err
+    assert main(vacio + ["teach", "train"]) == 1
+    assert "muestras de entrenamiento" in capsys.readouterr().err

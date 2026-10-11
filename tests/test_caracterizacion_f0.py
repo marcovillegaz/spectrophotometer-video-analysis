@@ -5,8 +5,8 @@ tocar ``cli.py``, ``teach.py``, ``templates.py``, ``evaluation.py`` o ``read.py`
 regresion (o un cambio deliberado que hay que documentar y re-fijar aca).
 
 Grupos:
-  1. ``teach`` por CLI: --check, --build, --keep, --eval, --eval-all, --all-runs.
-  2. ``batch --until read`` con un extract falso (sin ffmpeg) y ``_run_summary``.
+  1. ``teach`` por CLI: check, train, --keep, test eval (una corrida y tabla), errores.
+  2. ``batch --until read`` con un extract falso (sin ffmpeg), batch_report.csv y el resumen por corrida.
   3. ``--roi-only``: fotograma recortado + sidecar == fotograma completo.
   4. ``sign_slot``: tinta sin plantilla '-' => low_confidence; con '-' => negativo.
 """
@@ -23,14 +23,15 @@ import pytest
 
 from conftest import ROI_X, make_config, render_display
 from spectro import teach as T
-from spectro.cli import _run_summary, main
+from spectro.cli import main
 from spectro.evaluation import HISTORY_FIELDS, load_history
 from spectro.extract import FrameRow, load_roi_sidecar, write_frames_index
 from spectro.imaging import binarize, crop_for_reading, normalize_glyph, slot_boxes
-from spectro.project import RunPaths
-from spectro.qc import run_qc
-from spectro.read import read_frame, run_read
-from spectro.library import load as load_templates, template_path
+from spectro.project import CalibPaths, RunPaths
+from spectro.qc import QCRow, run_qc, write_qc_report
+from spectro.read import Reading, read_frame, run_read, write_readings
+from spectro.report import batch_summary, load_run_input
+from spectro.library import fingerprint, load as load_templates, template_path
 
 TRAIN_TEXTS = ["-0.123", " 4.567", "-8.901", " 2.345", " 6.789", "-0.246", " 1.357", " 9.048"]
 TEST_TEXTS = [" 3.456", "-7.890"]
@@ -66,15 +67,15 @@ def proyecto(tmp_path):
     return {"glob": glob, "run": run, "lib": tmp_path / "calib" / "templates", "tmp": tmp_path}
 
 
-def teach(p, *args, run=True):
-    pre = p["glob"] + (["--run", "r1"] if run else [])
-    return main(pre + ["teach", *args])
+def teach(p, *args):
+    """``teach <area> <verbo> ...``: el id de la corrida va como argumento, no como --run."""
+    return main(p["glob"] + ["teach", *args])
 
 
 def test_check_valida_y_escribe_solo_el_informe_sin_tocar_la_biblioteca(proyecto, capsys):
-    """Rompe: que --check escriba plantillas, o que deje de escribir teach_report.csv."""
+    """Rompe: que check escriba plantillas, o que deje de escribir teach_report.csv."""
     p = proyecto
-    assert teach(p, "--check") == 0
+    assert teach(p, "check", "r1") == 0
     salida = capsys.readouterr().out
     assert "8/8 lecturas exactas" in salida
     assert "no hay biblioteca vigente todavia" in salida
@@ -83,14 +84,13 @@ def test_check_valida_y_escribe_solo_el_informe_sin_tocar_la_biblioteca(proyecto
     assert _contar(p["run"] / "out" / "teach_report.csv") == 8
 
 
-def test_build_escribe_una_plantilla_por_caracter_y_el_informe(proyecto, capsys):
+def test_train_escribe_una_plantilla_por_caracter_y_el_informe(proyecto, capsys):
     """Rompe: la deduplicacion/seleccion de plantillas, el conteo o los nombres de archivo."""
     p = proyecto
-    assert teach(p, "--build") == 0
+    assert teach(p, "train", "r1") == 0
     salida = capsys.readouterr().out
     assert "12 plantillas escritas" in salida
-    assert "leave-one-out (sin las plantillas de la propia muestra): 8/8 lecturas exactas" in salida
-    assert "biblioteca vigente: 8/8 lecturas exactas" in salida
+    assert "8/8 lecturas exactas" in salida
     nombres = sorted(f.name for f in p["lib"].glob("*.png"))
     esperados = sorted([f"{c}_0.png" for c in "0123456789"] + ["dot_0.png", "minus_0.png"])
     assert nombres == esperados
@@ -99,35 +99,35 @@ def test_build_escribe_una_plantilla_por_caracter_y_el_informe(proyecto, capsys)
     assert {t.label for t in load_templates(p["lib"])} == set("0123456789.-")
 
 
-def test_build_con_keep_no_duplica_plantillas(proyecto, capsys):
+def test_train_con_keep_no_duplica_plantillas(proyecto, capsys):
     """Rompe: que --keep agregue copias de glifos casi identicos a los ya guardados."""
     p = proyecto
-    teach(p, "--build")
+    teach(p, "train", "r1")
     antes = sorted(f.name for f in p["lib"].glob("*.png"))
     capsys.readouterr()
-    assert teach(p, "--build", "--keep") == 0
+    assert teach(p, "train", "r1", "--keep") == 0
     assert "0 plantillas escritas" in capsys.readouterr().out
     assert sorted(f.name for f in p["lib"].glob("*.png")) == antes
 
 
-def test_build_sin_keep_reemplaza_la_biblioteca(proyecto):
+def test_train_sin_keep_reemplaza_la_biblioteca(proyecto):
     """Rompe: que el modo por defecto conserve plantillas viejas (no seria 'reemplazar')."""
     p = proyecto
     p["lib"].mkdir(parents=True)
     huerfana = p["lib"] / "9_7.png"
     cv2.imwrite(str(huerfana), np.zeros((20, 12), np.uint8))
-    assert teach(p, "--build") == 0
+    assert teach(p, "train", "r1") == 0
     assert not huerfana.exists()
 
 
-def test_eval_escribe_informe_e_historial_con_cifras_clave(proyecto, capsys):
+def test_test_eval_escribe_informe_e_historial_con_cifras_clave(proyecto, capsys):
     """Rompe: columnas de teach_history.csv, tipo de prueba, exactitud o cobertura."""
     p = proyecto
-    teach(p, "--build")
+    teach(p, "train", "r1")
     capsys.readouterr()
-    assert teach(p, "--eval") == 0
+    assert teach(p, "test", "eval", "r1") == 0
     salida = capsys.readouterr().out
-    assert "teach --eval" in salida and "misma corrida" in salida
+    assert "teach test eval r1" in salida and "misma corrida" in salida
     assert "2 muestras, 2 valores distintos" in salida
     assert "correctas 2/2 = 100.0%" in salida and "cobertura 100.0%" in salida
     out = p["run"] / "out"
@@ -136,42 +136,41 @@ def test_eval_escribe_informe_e_historial_con_cifras_clave(proyecto, capsys):
     assert len(filas) == 1 and list(filas[0]) == HISTORY_FIELDS
     assert filas[0]["tipo"] == "misma_corrida" and filas[0]["prueba"] == "2"
     assert float(filas[0]["exactitud"]) == 1.0
-    teach(p, "--eval")
+    teach(p, "test", "eval", "r1")
     assert len(load_history(out / "teach_history.csv")) == 2          # el historial acumula
 
 
-def test_eval_no_modifica_la_biblioteca(proyecto):
-    """Rompe: que --eval escriba o borre plantillas."""
+def test_test_eval_no_modifica_la_biblioteca(proyecto):
+    """Rompe: que test eval escriba o borre plantillas."""
     p = proyecto
-    teach(p, "--build")
+    teach(p, "train", "r1")
     antes = {f.name: f.read_bytes() for f in p["lib"].glob("*.png")}
-    teach(p, "--eval")
+    teach(p, "test", "eval", "r1")
     assert {f.name: f.read_bytes() for f in p["lib"].glob("*.png")} == antes
 
 
-def test_eval_all_lista_una_linea_por_corrida_con_prueba(proyecto, capsys):
-    """Rompe: el formato de la tabla (corrida, tipo, n, correctas) o el recorrido de corridas."""
+def test_test_eval_sin_corrida_da_una_fila_por_corrida_con_prueba(proyecto, capsys):
+    """Rompe: el formato de la tabla (corrida, prueba, exactitud) o el recorrido de corridas."""
     p = proyecto
-    teach(p, "--build")
+    teach(p, "train", "r1")
     capsys.readouterr()
-    assert teach(p, "--eval-all", run=False) == 0
+    assert teach(p, "test", "eval") == 0
     salida = capsys.readouterr().out
-    assert "teach --eval-all (biblioteca: 12 plantillas)" in salida
+    assert "teach test eval (biblioteca: 12 plantillas)" in salida
     linea = next(x for x in salida.splitlines() if x.strip().startswith("r1"))
-    assert "misma_corrida" in linea and "100.0%" in linea
-    assert linea.split()[2:5] == ["2", "2", "0"]                     # n, correctas, erroneas
+    assert "2 misma" in linea and "100.0%" in linea
 
 
-def test_eval_all_sin_ninguna_prueba_avisa_y_sale_con_0(proyecto, capsys):
+def test_test_eval_sin_ninguna_prueba_avisa_y_sale_con_0(proyecto, capsys):
     p = proyecto
-    teach(p, "--build")
+    teach(p, "train", "r1")
     (p["run"] / "test.csv").unlink()
     capsys.readouterr()
-    assert teach(p, "--eval-all", run=False) == 0
+    assert teach(p, "test", "eval") == 0
     assert "ninguna corrida tiene test.csv" in capsys.readouterr().out
 
 
-def test_all_runs_build_junta_corridas_y_escribe_un_informe_por_corrida(proyecto, capsys):
+def test_train_sin_corridas_junta_las_muestras_y_escribe_un_informe_por_corrida(proyecto, capsys):
     """Rompe: la union de muestras de varias corridas, el conteo o los informes por corrida."""
     p = proyecto
     r2 = p["tmp"] / "runs" / "r2"
@@ -182,42 +181,52 @@ def test_all_runs_build_junta_corridas_y_escribe_un_informe_por_corrida(proyecto
         cv2.imwrite(str(r2 / "frames" / _nombre(i * 10)), render_display(t))   # mismos nombres que r1
         muestras.append(T.Sample(_nombre(i * 10), t))
     T.save_truth(r2 / "truth.csv", muestras)
-    assert teach(p, "--build", "--all-runs", run=False) == 0
+    assert teach(p, "train") == 0
     salida = capsys.readouterr().out
-    assert "== teach --all-runs ==" in salida
+    assert "== teach train ==" in salida
     assert "8 muestras de entrenamiento" in salida and "5 muestras de entrenamiento" in salida
-    assert "13/13 lecturas exactas" in salida or "13 lecturas exactas" in salida
+    assert "13/13 lecturas exactas" in salida
     assert (p["lib"] / "minus_0.png").exists() and (p["lib"] / "dot_0.png").exists()
     assert _contar(p["run"] / "out" / "teach_report.csv") == 8
     assert _contar(r2 / "out" / "teach_report.csv") == 5
 
 
 @pytest.mark.parametrize(
-    "args, run, fragmento",
+    "args, fragmento",
     [
-        (["--add", "sin_igual"], True, "ARCHIVO=VALOR"),
-        (["--add", "t_9999999.000.jpg=0.123"], True, "No existe el fotograma"),
-        (["--all-runs"], False, "--build"),
+        (["samples", "add", "r1", "sin_igual"], "ARCHIVO=VALOR"),
+        (["samples", "add", "r1", "t_9999999.000.jpg=0.123"], "No existe el fotograma"),
+        (["samples", "list", "no_existe"], "No existe la corrida"),
     ],
 )
-def test_errores_de_teach_dan_codigo_1_y_mensaje(proyecto, capsys, args, run, fragmento):
-    assert teach(proyecto, *args, run=run) == 1
+def test_errores_de_teach_dan_codigo_1_y_mensaje(proyecto, capsys, args, fragmento):
+    assert teach(proyecto, *args) == 1
     assert fragmento in capsys.readouterr().err
 
 
-def test_build_y_eval_sin_muestras_dan_error_claro(proyecto, capsys):
+def test_train_sin_muestras_da_error_claro_y_no_escribe_nada(proyecto, capsys):
     p = proyecto
     (p["run"] / "truth.csv").unlink()
     (p["run"] / "test.csv").unlink()
-    assert teach(p, "--build") == 1
-    assert "No hay muestras en" in capsys.readouterr().err
-    assert teach(p, "--eval") == 1
-    assert "No hay muestras de prueba" in capsys.readouterr().err
+    assert teach(p, "train", "r1") == 1
+    assert "no tiene muestras de entrenamiento" in capsys.readouterr().err
+    assert teach(p, "train") == 1                                         # sin id: ninguna corrida sirve
+    assert "tiene muestras de entrenamiento" in capsys.readouterr().err
     assert not p["lib"].exists() or not list(p["lib"].glob("*.png"))      # nada a medias
 
 
-def test_eval_sin_biblioteca_da_error_claro(proyecto, capsys):
-    assert teach(proyecto, "--eval") == 1
+def test_test_eval_sin_prueba_da_error_claro(proyecto, capsys):
+    p = proyecto
+    assert teach(p, "train", "r1") == 0
+    (p["run"] / "test.csv").unlink()
+    capsys.readouterr()
+    assert teach(p, "test", "eval", "r1") == 1
+    assert "No hay muestras de prueba" in capsys.readouterr().err
+    assert not (p["run"] / "out" / "teach_history.csv").exists()          # nada a medias
+
+
+def test_test_eval_sin_biblioteca_da_error_claro(proyecto, capsys):
+    assert teach(proyecto, "test", "eval", "r1") == 1
     assert "plantillas" in capsys.readouterr().err
     assert not (proyecto["run"] / "out" / "teach_history.csv").exists()   # nada a medias
 
@@ -272,12 +281,24 @@ def test_batch_until_read_deja_lecturas_y_no_hace_el_informe(lote, capsys):
     assert not (run / "out" / "absorbancia.csv").exists()
 
 
-def test_batch_completo_resume_validas_y_rango(lote, capsys):
-    """Rompe: el formato del resumen del lote o que no llegue a report."""
+def test_batch_completo_imprime_la_tabla_y_escribe_batch_report(lote, library, capsys):
+    """Rompe: la tabla del lote, runs/batch_report.csv o que no llegue a report."""
     assert main(lote["glob"] + ["batch", str(lote["video"])]) == 0
     salida = capsys.readouterr().out
-    assert "5 validas de 5 (100%), absorbancia [0.245, 0.248]" in salida
-    assert (lote["runs"] / "demo" / "out" / "absorbancia.csv").exists()
+    assert "== reporte del lote ==" in salida
+    linea = next(x for x in salida.splitlines() if x.strip().startswith("demo"))
+    assert "100.0%" in linea and "al_dia" in linea
+    assert "sin umbrales de aceptacion" in salida            # el codigo no inventa umbrales
+    absorbancia = lote["runs"] / "demo" / "out" / "absorbancia.csv"
+    with absorbancia.open(encoding="utf-8") as fh:
+        valores = [float(f["absorbancia"]) for f in csv.DictReader(fh)]
+    assert valores == pytest.approx([float(v) for v in VALORES_BATCH])
+    with (lote["runs"] / "batch_report.csv").open(encoding="utf-8") as fh:
+        (fila,) = list(csv.DictReader(fh))
+    assert (fila["corrida"], fila["fotogramas"], fila["ok"]) == ("demo", "5", "5")
+    assert float(fila["cobertura"]) == 1.0 and fila["veredicto"] == ""
+    assert fila["salidas"] == "al_dia" and fila["huella"] == fingerprint(lote["calib"] / "templates")
+    assert int(fila["plantillas"]) == len(library)
 
 
 def test_batch_saltea_la_corrida_ya_hecha(lote, capsys):
@@ -300,17 +321,28 @@ def test_batch_until_invalido_lo_rechaza_el_parser_con_codigo_2(lote, capsys):
     assert "--until" in capsys.readouterr().err
 
 
-def test_run_summary_con_y_sin_salida(tmp_path):
-    """Rompe: el texto de _run_summary ('sin salida', '0 validas', 'N validas de M (P%)...')."""
+def test_resumen_de_una_corrida_sin_qc_ni_lectura(tmp_path):
+    """Rompe: que una corrida sin salidas cuente 0 ok / 0% de cobertura en vez de 'sin dato'."""
     run = RunPaths.for_run("x", runs_dir=tmp_path / "runs", calib_dir=tmp_path / "calib")
-    assert _run_summary(run) == "sin salida"
-    run.absorbance.parent.mkdir(parents=True)
-    run.absorbance.write_text("t_s,absorbancia\n", encoding="utf-8")
-    assert _run_summary(run) == "0 validas"
-    run.absorbance.write_text("t_s,absorbancia\n0,0.100\n1,0.400\n2,0.250\n", encoding="utf-8")
-    assert _run_summary(run) == "3 validas de 3 (100%), absorbancia [0.100, 0.400]"
-    run.qc_report.write_text("archivo\n" + "a\n" * 4, encoding="utf-8")
-    assert _run_summary(run) == "3 validas de 4 (75%), absorbancia [0.100, 0.400]"
+    entrada = load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], evaluar=False)
+    assert entrada.estados == [] and not entrada.leido and entrada.salidas == "sin_lectura"
+    (fila,) = batch_summary([entrada])
+    assert fila.fotogramas == 0 and fila.ok is None and fila.cobertura is None
+
+
+def test_resumen_de_una_corrida_con_descartes_y_lecturas(tmp_path):
+    """Rompe: el conteo de ok / descartes por motivo o la cobertura (ok / fotogramas extraidos)."""
+    run = RunPaths.for_run("x", runs_dir=tmp_path / "runs", calib_dir=tmp_path / "calib")
+    estados = ["ok", "ok", "ok", "dark"]
+    write_qc_report([QCRow(f"t_{i}.jpg", float(i), i + 1, estado=e) for i, e in enumerate(estados)],
+                    run.qc_report)
+    write_readings([Reading(f"t_{i}.jpg", float(i), i + 1, 0.1, 0.9, "0.100") for i in range(3)],
+                   run.readings)
+    entrada = load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], evaluar=False)
+    assert entrada.estados == estados and entrada.leido
+    (fila,) = batch_summary([entrada])
+    assert (fila.fotogramas, fila.ok, fila.qc["dark"], fila.descartados_qc) == (4, 3, 1, 1)
+    assert fila.cobertura == pytest.approx(0.75)
 
 
 # ==========================================================================

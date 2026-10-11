@@ -158,10 +158,12 @@ def test_parser_acepta_until_y_los_flags_de_teach():
     p = build_parser()
     assert p.parse_args(["batch", "a.mov", "--until", "qc"]).until == "qc"
     assert p.parse_args(["batch", "a.mov"]).until == "report"
-    a = p.parse_args(["--run", "x", "teach", "--suggest", "5", "--for", "test", "--strategy", "random",
+    a = p.parse_args(["teach", "samples", "suggest", "x", "5", "--strategy", "random",
                       "--seed", "2", "--gap", "7"])
-    assert (a.suggest, a.for_set, a.strategy, a.seed, a.gap) == (5, "test", "random", 2, 7.0)
-    assert p.parse_args(["teach", "--eval-all"]).eval_all
+    assert (a.run_id, a.n, a.which, a.strategy, a.seed, a.gap) == ("x", 5, "train", "random", 2, 7.0)
+    t = p.parse_args(["teach", "test", "suggest", "x", "5"])
+    assert (t.which, t.strategy) == ("test", "random")          # la prueba es siempre al azar
+    assert p.parse_args(["teach", "test", "eval"]).runs == []
 
 
 # -- flujo completo por CLI (proyecto de juguete en tmp_path) ----------------
@@ -173,7 +175,7 @@ def proyecto(tmp_path):
     make_config(sign=True).save(run / "config.json")
     train = [(frame(run / "frames", i * 10, t), t.strip()) for i, t in enumerate(TRAIN_TEXTS)]
     test = [(frame(run / "frames", 100 + i * 10, t), t.strip()) for i, t in enumerate((" 3.456", "-7.890"))]
-    base = ["--runs-dir", str(runs), "--calib-dir", str(calib), "--run", "r1"]
+    base = ["--runs-dir", str(runs), "--calib-dir", str(calib)]
     return {"base": base, "run": run, "calib": calib, "train": train, "test": test, "tmp": tmp_path}
 
 
@@ -182,9 +184,10 @@ def cli(p, *args):
 
 
 def test_flujo_completo_la_prueba_nunca_entra_a_la_biblioteca(proyecto, monkeypatch, capsys):
+    """Rompe: que train arme la biblioteca con muestras de test.csv (p. ej. si juntara truth + test)."""
     p = proyecto
-    assert cli(p, "--add", *[f"{a}={v}" for a, v in p["train"]]) == 0
-    assert cli(p, "--add-test", *[f"{a}={v}" for a, v in p["test"]]) == 0
+    assert cli(p, "samples", "add", "r1", *[f"{a}={v}" for a, v in p["train"]]) == 0
+    assert cli(p, "test", "add", "r1", *[f"{a}={v}" for a, v in p["test"]]) == 0
     assert (p["run"] / "test.csv").exists()
 
     vistos: list[list[str]] = []
@@ -195,16 +198,16 @@ def test_flujo_completo_la_prueba_nunca_entra_a_la_biblioteca(proyecto, monkeypa
         return original(samples, *a, **k)
 
     monkeypatch.setattr(T, "build_pool", espia)
-    assert cli(p, "--build") == 0
+    assert cli(p, "train", "r1") == 0
     probados = {a for a, _ in p["test"]}
     assert vistos and not (probados & {x for lote in vistos for x in lote})  # nunca llega a la biblioteca
     monkeypatch.undo()
 
     capsys.readouterr()
-    assert cli(p, "--eval") == 0
+    assert cli(p, "test", "eval", "r1") == 0
     salida = capsys.readouterr().out
-    assert "teach --eval" in salida and "correctas" in salida and "misma corrida" in salida
-    assert cli(p, "--eval") == 0
+    assert "teach test eval r1" in salida and "correctas" in salida and "misma corrida" in salida
+    assert cli(p, "test", "eval", "r1") == 0
     filas = load_history(p["run"] / "out" / "teach_history.csv")
     assert len(filas) == 2 and filas[0]["tipo"] == "misma_corrida" and filas[0]["prueba"] == "2"
     with (p["run"] / "out" / "test_report.csv").open(encoding="utf-8") as fh:
@@ -214,9 +217,9 @@ def test_flujo_completo_la_prueba_nunca_entra_a_la_biblioteca(proyecto, monkeypa
 def test_mover_de_entrenamiento_a_prueba_avisa_y_deja_un_solo_conjunto(proyecto, capsys):
     p = proyecto
     a, v = p["train"][0]
-    cli(p, "--add", f"{a}={v}")
+    cli(p, "samples", "add", "r1", f"{a}={v}")
     capsys.readouterr()
-    cli(p, "--add-test", f"{a}={v}")
+    cli(p, "test", "add", "r1", f"{a}={v}")
     assert "ya aporto glifos" in capsys.readouterr().out
     assert T.load_truth(p["run"] / "truth.csv") == []
     assert [s.archivo for s in T.load_truth(p["run"] / "test.csv")] == [a]
@@ -224,9 +227,9 @@ def test_mover_de_entrenamiento_a_prueba_avisa_y_deja_un_solo_conjunto(proyecto,
 
 def test_suggest_para_prueba_es_al_azar_y_lejos_del_entrenamiento(proyecto, capsys):
     p = proyecto
-    cli(p, "--add", *[f"{a}={v}" for a, v in p["train"]])
+    cli(p, "samples", "add", "r1", *[f"{a}={v}" for a, v in p["train"]])
     capsys.readouterr()
-    assert cli(p, "--suggest", "3", "--for", "test", "--gap", "5") == 0
+    assert cli(p, "test", "suggest", "r1", "3", "--gap", "5") == 0
     salida = capsys.readouterr().out
     nombres = [x.split()[0] for x in salida.splitlines() if x.strip().startswith("t_")]
     entrenados = {a for a, _ in p["train"]}
@@ -236,27 +239,29 @@ def test_suggest_para_prueba_es_al_azar_y_lejos_del_entrenamiento(proyecto, caps
 
 def test_suggest_sin_readings_avisa_arranque_en_frio(proyecto, capsys):
     p = proyecto
-    assert cli(p, "--suggest", "3", "--strategy", "mixed") == 0
+    assert cli(p, "samples", "suggest", "r1", "3", "--strategy", "mixed") == 0
     salida = capsys.readouterr().out
     assert "uniforme" in salida and "arranque en frio" in salida
 
 
 def test_eval_sin_prueba_o_sin_biblioteca_falla_con_mensaje(proyecto, capsys):
     p = proyecto
-    assert cli(p, "--eval") == 1
-    assert "No hay muestras de prueba" in capsys.readouterr().err
-    cli(p, "--add-test", *[f"{a}={v}" for a, v in p["test"]])
-    assert cli(p, "--eval") == 1                       # hay prueba pero no hay biblioteca todavia
+    assert cli(p, "test", "eval", "r1") == 1             # sin biblioteca: el error dice que correr
     assert "plantillas" in capsys.readouterr().err
+    cli(p, "samples", "add", "r1", *[f"{a}={v}" for a, v in p["train"]])
+    assert cli(p, "train", "r1") == 0
+    assert cli(p, "test", "eval", "r1") == 1             # hay biblioteca pero no hay prueba
+    assert "No hay muestras de prueba" in capsys.readouterr().err
 
 
-def test_eval_all_recorre_las_corridas_con_prueba(proyecto, capsys):
+def test_eval_sin_corrida_recorre_las_corridas_con_prueba(proyecto, capsys):
     p = proyecto
-    cli(p, "--add", *[f"{a}={v}" for a, v in p["train"]])
-    cli(p, "--add-test", *[f"{a}={v}" for a, v in p["test"]])
-    cli(p, "--build")
+    cli(p, "samples", "add", "r1", *[f"{a}={v}" for a, v in p["train"]])
+    cli(p, "test", "add", "r1", *[f"{a}={v}" for a, v in p["test"]])
+    cli(p, "train", "r1")
     capsys.readouterr()
-    assert main(["--runs-dir", str(p["tmp"] / "runs"), "--calib-dir", str(p["calib"]),
-                 "teach", "--eval-all"]) == 0
+    assert cli(p, "test", "eval") == 0
     salida = capsys.readouterr().out
-    assert "eval-all" in salida and "r1" in salida and "misma_corrida" in salida
+    assert "teach test eval (biblioteca:" in salida
+    linea = next(x for x in salida.splitlines() if x.strip().startswith("r1"))
+    assert "misma" in linea
