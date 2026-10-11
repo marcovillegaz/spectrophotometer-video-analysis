@@ -1,5 +1,9 @@
 # Guía de calibración por rondas — paso a paso, con fundamentos
 
+**Para quién y cuándo leerlo:** cuando el lector todavía no lee bien tu display (biblioteca vacía,
+un equipo nuevo, un carácter que falta) o cuando necesitás saber cuánto confiar en lo que lee.
+Conviene haber hecho antes la [primera corrida](../empezar/primera-corrida.md).
+
 Esta guía explica **cómo enseñarle al lector a leer el display de un equipo nuevo** y **cuánto
 confiar en lo que lee**, y por qué cada paso se hace como se hace. No hace falta saber ciencia de
 datos: cada concepto se explica en lenguaje llano, y al lado se da su nombre técnico por si querés
@@ -7,9 +11,11 @@ buscarlo.
 
 Los comandos de `teach` llevan el id de la corrida como argumento; reemplazá `<id>` por tu corrida
 (por ejemplo `img_8102`). Las etapas del pipeline (`qc`, `read`, `report`) lo llevan con `--run`.
-La lista completa de comandos y flags está en el
-[README](../README.md#teach--entrenar-y-medir-el-lector), y el porqué de las decisiones de diseño,
-en [ARQUITECTURA.md](ARQUITECTURA.md).
+La lista completa de comandos y flags está en la
+[referencia de `teach`](../referencia/comandos.md#teach--entrenar-y-medir-el-lector), y el porqué de
+las decisiones de diseño, en [decisiones](../diseno/decisiones.md). Un recorrido completo sobre
+datos reales está en el [ejemplo resuelto](ejemplo-img_8102.md), y la tabla de síntomas, en el
+[diagnóstico](../diagnosticar/problemas.md#calibración-del-lector).
 
 ---
 
@@ -228,7 +234,7 @@ python -m spectro teach train --exclude <id>                    # ...menos un vi
 En la ventana, `Agregar a biblioteca` suma las muestras de esa corrida sin duplicar (como
 `teach train <id> --keep`) y `Reemplazar biblioteca` la reescribe solo con ellas (pide un segundo
 clic). `Gestionar biblioteca` muestra cada plantilla con cuántas celdas gana bien y mal. Los
-controles de la ventana están en el [README](../README.md#la-ventana-de-teach-samples-label-test-label).
+controles de la ventana están en la [referencia](../referencia/comandos.md#la-ventana-de-teach-samples-label-test-label).
 
 **Varios videos: una biblioteca, muestras de todos.** La biblioteca es **una sola**, compartida por
 todos los videos, y `truth.csv` es **uno por video**. `teach train` sin argumentos junta las muestras
@@ -440,65 +446,14 @@ que ya tienen salida, que quedan leídas con la biblioteca anterior.
 
 ---
 
-## 4. Ejemplo resuelto: `img_8102`
+### Los pasos sobre datos reales
 
-Todo lo que sigue sale de una corrida real, del 8 de octubre de 2026 (verificación hecha sobre
-copias, sin tocar `calib/`). **Los valores de las muestras los leyó a ojo una persona de recortes de
-pantalla** y sirven de ejemplo del flujo, no de medida de laboratorio. Se hizo con la versión
-anterior de `teach` (un comando con flags de modo); acá cada paso está escrito con el comando actual
-que hace lo mismo, y las salidas son las de ese momento.
-
-**Ronda 0.** 14 muestras de entrenamiento, repartidas parejo → biblioteca de 13 plantillas (varios
-dígitos con un solo ejemplo). El leave-one-out ya lo dice: `9/14 lecturas exactas`, y los errores
-terminan en *"sin ejemplos de '7' en las demás muestras"*. Con esa biblioteca `read` da
-`10115/10796 lecturas válidas` (93,7 %).
-
-**Muestreo por incertidumbre.** La primera versión del filtro (50 % de vecinos dudosos) sugirió 6
-fotogramas "inciertos"; mirándolos, 5 eran el último dígito a medio redibujar. Midiendo se vio que las
-rachas de baja confianza duran **a lo sumo 1 s**, con fotogramas `ok` intercalados. Con el umbral en
-80 % (el que usa la herramienta) el aviso es *"solo hay 0 fotogramas inciertos y persistentes"* y la
-ronda se completa al azar: en este video no hay un carácter desconocido que cazar.
-
-**La prueba.** `teach test suggest img_8102 20` → 20 fotogramas al azar, de 20 tramos del video
-(`t = 103,5 s … 2665,75 s`). Tras etiquetarlos, `teach test eval img_8102`:
-
-```
-prueba [misma corrida (optimista: mide este video)]: 20 muestras, 17 valores distintos
-  correctas 19/20 = 95.0%  [IC95 76.4% a 99.1%]
-  erroneas aceptadas 1/20 = 5.0%  [IC95 0.9% a 23.6%]
-  descartadas 0/20   cobertura 100.0%
-```
-
-La errónea es `t_0001156.500.jpg`: se escribió `-0.016`, el lector aceptó `-0.015` con confianza
-0,84. Mirando el recorte binarizado, el último dígito **es** un `6`: es un error real del lector, y de
-los que no se detectan por incertidumbre. La NCC del glifo contra la plantilla `6` es 0,755 y contra la
-`5`, 0,837: faltaba una variante del `6` con ese aspecto.
-
-**Ronda 1 y curva plana.** Se sumaron 13 muestras más (27 en total) y el entrenamiento con `--keep`
-agregó **0** plantillas nuevas; la prueba siguió en 19/20. `teach_history.csv` quedó así (todavía con
-el encabezado en español de esa versión, que se sigue leyendo):
-
-```
-fecha,tipo,plantillas,entrenamiento,prueba,valores_distintos,correctas,erroneas,descartadas,exactitud,error_aceptadas,cobertura
-2026-10-08 22:22:31,misma_corrida,13,14,20,17,19,1,0,0.9500,0.0500,1.0000
-2026-10-08 22:22:52,misma_corrida,13,27,20,17,19,1,0,0.9500,0.0500,1.0000
-```
-
-**Lección sobre el "duplicado".** Que no se agregara nada llevó a revisar el filtro: se usaba un hash
-perceptual grueso (8×8) y consideraba "duplicado" un `6` con NCC 0,755 contra la plantilla. Ahora la
-deduplicación usa la NCC (≥ 0,95), la misma medida con la que lee el lector. Reconstruida con las 27
-muestras, la biblioteca pasa a 36 plantillas y `read` da `10181/10796 válidas` (94,3 %) con confianza
-mediana 0,929 (antes 0,892) y sin saltos aislados. La prueba sigue en 19/20 porque en el entrenamiento
-no hay ningún `6` con el aspecto del fotograma que falla: la siguiente ronda correcta es **etiquetar
-fotogramas parecidos a ese** (misma zona, a más de 5 s) como entrenamiento.
-
-**Lo que este ejemplo no mide.** Es una prueba `same_run`: dice cómo lee *este* video. Para
-estimar un video nuevo hace falta una prueba en otro video sin entrenamiento propio (hoy `img_8112`
-cumple ese papel) y correr `teach test eval`.
+El [ejemplo resuelto sobre `img_8102`](ejemplo-img_8102.md) recorre los pasos 1, 2, 4 y 5 con las
+salidas reales de una corrida (8-oct-2026), incluido un error confiado que solo encontró la prueba.
 
 ---
 
-## 5. La ronda final
+## 4. La ronda final
 
 Es la última vuelta del ciclo, la que deja la biblioteca con la que se procesan todos los videos y
 el criterio con el que se acepta cada uno.
@@ -516,7 +471,7 @@ python -m spectro batch videos/*.MOV --fps 4 --no-skip-existing
 ```
 
 Entre `test eval` y `batch`, fijá los umbrales en la sección `acceptance` de `calib/config.json`
-([CONFIG](CONFIG.md#acceptance--criterio-del-lote--solo-en-calib)) con lo que mediste.
+([config](../referencia/config.md#acceptance--criterio-del-lote--solo-en-calib)) con lo que mediste.
 
 **Qué pasa por dentro** — `status` y `lib list --usage` solo leen. `samples label` y `test label`
 escriben `truth.csv` y `test.csv`. `train` respalda y reescribe `calib/templates/`. `test eval` sin
@@ -577,20 +532,14 @@ deja de ser un video nuevo y se pierde la única medida de generalización. Y ol
 
 ---
 
-## 6. Diagnóstico
+## 5. Cuando algo no sale como se espera
 
-| síntoma | causa probable | qué hacer |
-|---|---|---|
-| La biblioteca lee 0 de mis muestras | cambió la geometría (rotación, ROI, celdas) o se promovió una receta distinta | reconstruir la biblioteca (`teach train`) con las muestras actuales y `calibrate --promote` |
-| `teach status`: `faltan: '-'`, y la exactitud cae en corridas con valores negativos (con 0 % de error) | falta la plantilla del signo: el lector descarta todos los negativos | etiquetar valores negativos (`teach samples label <id>`) y `teach train` |
-| `test eval`: aceptadas erróneas con un dígito constante (p. ej. `6`→`5`) | falta una variante de ese dígito | etiquetar como **entrenamiento** fotogramas parecidos, separados de la prueba |
-| `test eval`: cobertura baja (muchas descartadas) con fotogramas bien dibujados | faltan plantillas, o hay variantes que se estorban entre sí | `teach lib list --usage`: borrar las `DANINA`; sumar variedad |
-| Un aviso de **fugas** | fotogramas de prueba a menos de `--gap` s de entrenamiento | mover la muestra o ampliar `--gap`; la exactitud puede estar inflada |
-| Aviso de **valores distintos** bajos | la prueba repite pocos valores | tomar más fotogramas, de tramos con otros valores |
-| `suggest` dice *arranque en frío* | casi todo se descarta o no hay `readings.csv` | ronda uniforme; después de entrenar, correr `read` |
-| `suggest` dice que `readings.csv` es anterior a la biblioteca | se cambió la biblioteca o la config después de `read` | correr `read` de nuevo |
-| `suggest`: "solo hay N fotogramas inciertos y persistentes" | no hay un carácter desconocido; lo que duda es el parpadeo | normal; la ronda se completa al azar |
-| `teach status` o `batch_report.csv`: salidas `stale` | las lecturas son de otra biblioteca | `read --run <id>` y `report --run <id>` (o `batch … --no-skip-existing`) |
-| Muchos `roi_outside` en `teach status` | la ROI quedó pegada al borde y la deriva la saca del fotograma | recalibrar con un poco más de margen |
-| `read` se volvió lento | la biblioteca tiene muchas variantes | bajar `--max-per-label`, o borrar las que no aportan |
-| Se borraron plantillas por error | — | `teach lib restore` (vuelve al último respaldo) |
+La tabla de síntomas de la calibración (biblioteca que no lee, signo faltante, fugas, avisos de
+`suggest`, salidas `stale`…) vive en el
+[diagnóstico](../diagnosticar/problemas.md#calibración-del-lector), junto con los problemas del
+resto del pipeline.
+
+---
+
+**Siguiente paso:** el ciclo completo sobre un video real, en el
+[ejemplo resuelto de `img_8102`](ejemplo-img_8102.md).

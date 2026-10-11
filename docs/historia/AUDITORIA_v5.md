@@ -1,7 +1,9 @@
 > **Documento histórico.** Auditoría de partida del plan v5, del 2026-10-10. Se movió de `docs/` a
 > `docs/historia/` en la Fase 5 (2026-10-11). Describe el proyecto **antes** del plan: los comandos,
-> módulos y cifras que cita (por ejemplo `templates.py` o `cmd_teach`) ya no existen o cambiaron. El
-> estado vigente está en el `README.md` y en `docs/`.
+> módulos y cifras que cita (por ejemplo `templates.py` o `cmd_teach`) ya no existen o cambiaron.
+> También las rutas de documentos son las de su época (`docs/GUIA_CALIBRACION.md`,
+> `docs/ARQUITECTURA.md`, `docs/CONFIG.md`, `PLAN_v5.md` en la raíz): hoy la lista vigente es el
+> mapa de la documentación del `README.md`, y los planes están en `docs/plans/`.
 
 # Auditoría previa al upgrade (insumo para `PLAN_v5.md`)
 

@@ -1,6 +1,6 @@
 # Continuación del plan v5 — dónde estamos y cómo seguir
 
-Actualizado: 2026-10-10, al cierre de la Fase 2. El plan completo está en `C:\Users\marco\.claude\plans\a-partir-dela-informacion-cozy-hellman.md`; este documento resume lo hecho, **ajusta** las fases que faltan con lo que se aprendió y dice cómo retomar en una sesión nueva.
+Actualizado: 2026-10-11, al cierre de la Fase 5 (fases 0 a 5 hechas y commiteadas; falta la Fase 6). El plan original se escribió fuera del repositorio; todo lo que sigue vigente de él ya está en este documento, que resume lo hecho, **ajusta** las fases que faltan con lo que se aprendió y dice cómo retomar en una sesión nueva.
 
 ## 1. Estado
 
@@ -9,22 +9,22 @@ Actualizado: 2026-10-10, al cierre de la Fase 2. El plan completo está en `C:\U
 | 0 | Red de seguridad: snapshot, golden de `read`, tests de caracterización, `pytest-cov` | **hecha** |
 | 1 | Núcleo único (`library.py`, `cell_glyphs`, `RunContext`, evaluador único), guarda de recorte, eliminación de `templates` | **hecha** |
 | 2 | `teach` por áreas (`teach_cli.py`), huella de la biblioteca, reporte de `batch` | **hecha** |
-| 3 | UIs con base común y loop delgado | **hecha**; tu prueba manual de la UI ya se hizo; se quitó el teclado numérico de botones de `teach`; falta el commit |
-| 3.5 | Convención de nombres en inglés (identificadores, CSV, flags, config) | **hecha en código**; sin commitear |
-| 4 | Tests nuevos y piso de cobertura | **hecha** (2026-10-11): 973 passed; `tests/check_cobertura.py` verifica el piso de 85 % en `library`, `teach_cli`, `evaluation` y `teach_session` (hoy 97–100 %) |
-| 5 | Documentación con fuente única | **hecha** (2026-10-11): `check_docs.py` ampliado (comandos en prosa, avisos de ids), skills actualizadas, originales movidos a `docs/historia/`; las cifras del Quickstart se completan tras la Fase 6 |
+| 3 | UIs con base común y loop delgado | **hecha y commiteada** (`e30343d`); la prueba manual de la UI ya se hizo; se quitó el teclado numérico de botones de `teach` |
+| 3.5 | Convención de nombres en inglés (identificadores, CSV, flags, config) | **hecha y commiteada** (`e30343d`, junto con la Fase 3) |
+| 4 | Tests nuevos y piso de cobertura | **hecha y commiteada** (`76f8b9a`, 2026-10-11): 973 passed; `tests/check_cobertura.py` verifica el piso de 85 % en `library`, `teach_cli`, `evaluation` y `teach_session` (hoy 97–100 %) |
+| 5 | Documentación con fuente única | **hecha y commiteada** (`0d94eba` documentos, `8cde925` reglas, skills y `check_docs.py`; 2026-10-11). Después se reorganizó en carpetas (ver [Fase 5](#fase-5--documentación-agente-writer--sesión-principal)); esa reorganización está **sin commitear**. Las cifras del Quickstart se completan tras la Fase 6 |
 | 6 | Entrenamiento final (lo hacés vos) | pendiente |
 | cierre | Commitear salidas y datos del entrenamiento (`runs/*/out/`, `calib/templates/`, `truth.csv`/`test.csv`, `batch_report.csv`) | pendiente |
 
 **Medido al cierre de la Fase 1:** 419 tests en verde y 2 rotos a propósito (`tests/test_docs.py`, porque el README todavía cita el comando `templates`, que ya no existe; se arregla en la Fase 5). Cobertura de partida (Fase 0): 73 %. `read` sobre las 4 corridas es idéntico byte a byte al golden de la Fase 0.
 
-**Medido al cierre de la Fase 2 (2026-10-10):** 714 tests en verde y 2 rotos a propósito (otra vez solo `tests/test_docs.py`: el README y `docs/GUIA_CALIBRACION.md` citan el comando `templates` y los flags viejos de `teach`; se arregla en la Fase 5). La suite tarda ~25-30 s. Cobertura: `library.py` 96 %, `teach_cli.py` 99 %, `evaluation.py` 97 %, `report.py` 97 %, total 83 %. `read` de `img_8110` sigue idéntico al golden (SHA256 `7093f654...47d44`).
+**Medido al cierre de la Fase 2 (2026-10-10):** 714 tests en verde y 2 rotos a propósito (otra vez solo `tests/test_docs.py`: el README y la guía de calibración (hoy `docs/calibrar/guia.md`) citaban el comando `templates` y los flags viejos de `teach`; se arregla en la Fase 5). La suite tarda ~25-30 s. Cobertura: `library.py` 96 %, `teach_cli.py` 99 %, `evaluation.py` 97 %, `report.py` 97 %, total 83 %. `read` de `img_8110` sigue idéntico al golden (SHA256 `7093f654...47d44`).
 
-**Medido al cierre de la Fase 3 en código (2026-10-11):** 901 passed, 1 xfailed y las 2 de `test_docs` rotas a propósito. `read` de `img_8110` idéntico al golden. `/code-review high`: 10 hallazgos, todos corregidos (umbrales de qc sin filas descartadas, respaldo al abrir la sesión, `respaldar` en `delete`/`relabel`, `is_slow`, `DEFAULT_SUGGEST_SEED`, centinela en `RunContext`). Sin commitear. Falta la prueba manual de las ventanas. Para el `writer` (Fase 5): `docs/CONFIG.md` aún documenta `cluster_hamming`; `--seed` ahora es `None` (el botón Aleatorio es reproducible solo con `--seed`).
+**Medido al cierre de la Fase 3 en código (2026-10-11):** 901 passed, 1 xfailed y las 2 de `test_docs` rotas a propósito. `read` de `img_8110` idéntico al golden. `/code-review high`: 10 hallazgos, todos corregidos (umbrales de qc sin filas descartadas, respaldo al abrir la sesión, `respaldar` en `delete`/`relabel`, `is_slow`, `DEFAULT_SUGGEST_SEED`, centinela en `RunContext`). Sin commitear. Falta la prueba manual de las ventanas. Para el `writer` (Fase 5, ya resuelto): la referencia de config (hoy `docs/referencia/config.md`) documentaba `cluster_hamming`; `--seed` ahora es `None` (el botón Aleatorio es reproducible solo con `--seed`).
 
 ### Lo que no hay que perder de vista
 
-- **Lo hecho hasta la Fase 2 está commiteado.** Fases 0 y 1: 12 commits, `aea57e4..72dab9e` (más `5d37302`, que registró ese cierre en los planes). Fase 2: 4 commits, `e7a2f66..361707d` (ver [§3, Fase 2](#fase-2--teach-por-áreas-y-reporte-de-batch-hecha)). Quedan sin commitear las salidas `runs/*/out/` (se commitean al final, tras la Fase 6). `COMMITS_PENDIENTES.md` es local (excluido en `.git/info/exclude`) y solo sirve para las fases siguientes. Las copias de `old_data/` siguen siendo la red de seguridad.
+- **Lo hecho hasta la Fase 5 está commiteado.** Fases 0 y 1: 12 commits, `aea57e4..72dab9e` (más `5d37302`, que registró ese cierre en los planes). Fase 2: 4 commits, `e7a2f66..361707d` (ver [§3, Fase 2](#fase-2--teach-por-áreas-y-reporte-de-batch-hecha)). Fases 3 y 3.5: `e30343d`. Fase 4: `76f8b9a`. Fase 5: `0d94eba` y `8cde925`. Quedan sin commitear la reorganización de `docs/` en carpetas y las salidas `runs/*/out/` (se commitean al final, tras la Fase 6). Las copias de `old_data/` siguen siendo la red de seguridad.
 - **La biblioteca actual no tiene la plantilla `-`.** Con ella, `read` descarta ~90 % de 8102 y 8106 (medido; ver `docs/historia/AUDITORIA_v5.md` §4.1). Hasta la Fase 6 las lecturas de esas dos corridas no son representativas.
 - **Estado de los datos reales al cierre de la Fase 2** (según `teach status` y `teach lib list --usage`, 2026-10-10): las 4 corridas figuran `desactualizadas` (8102, 8106) o `sin_huella` (8110, 8112), porque todavía no tienen `out/read_meta.json` (se crea en la próxima `read`); sigue faltando la plantilla `-`; `img_8110` no tiene muestras de `-`; la plantilla `1_0` aparece marcada como dañina en `lib list --usage`. Todo eso se resuelve en la Fase 6.
 - **`old_data/` se conserva** (decisión tuya). Contiene `golden_f0/` (con `SHA256SUMS.txt`), `snapshot_f0_20261010/`, `snapshot_f1_20261010/` y el respaldo viejo.
@@ -32,11 +32,11 @@ Actualizado: 2026-10-10, al cierre de la Fase 2. El plan completo está en `C:\U
 
 ## 2. Cómo retomar en una sesión nueva
 
-1. Leé este documento, `COMMITS_PENDIENTES.md` y la sección de la fase que sigue en el plan.
-2. Comprobá la línea de base: `.venv/Scripts/python -m pytest -q` debe dar **973 passed, 1 xfailed** (~30 s). Si no, algo cambió desde este documento.
-3. Antes de empezar cada fase, copiá el árbol: `old_data/snapshot_f<N>_<fecha>/` con `src`, `tests`, `docs` (incluye `docs/historia/PLAN_v5.md`), `README.md`, `CLAUDE.md`, `pyproject.toml`, `requirements.txt`.
+1. Leé este documento y la sección de la fase que sigue (§3).
+2. Comprobá la línea de base: `.venv/Scripts/python -m pytest -q` debe dar **975 passed** (medido el 2026-10-11, tras la reorganización de `docs/`; ~30-50 s). Si no, algo cambió desde este documento.
+3. Antes de empezar cada fase, copiá el árbol: `old_data/snapshot_f<N>_<fecha>/` con `src`, `tests`, `docs` (incluye `docs/plans/`), `README.md`, `CLAUDE.md`, `pyproject.toml`, `requirements.txt`.
 4. Ejecutá la fase con el agente indicado (ver §3) y verificá vos el resultado antes de darla por buena: suite, golden y, en las fases con cambio de comportamiento, `/code-review high`.
-5. Al cerrar la fase, agregá la entrada a `COMMITS_PENDIENTES.md` y actualizá la tabla de §1.
+5. Al cerrar la fase, actualizá la tabla de §1 y commiteá con `/commit`.
 
 **Verificación del golden** (cuesta ~25 minutos para las 4 corridas; 8110 sola tarda ~2 y alcanza como prueba rápida). Siempre con copias en scratch, nunca sobre `runs/`:
 
@@ -104,7 +104,7 @@ Ojo: desde la Fase 2, `read` escribe además `out/read_meta.json` (la huella de 
 
 ### Fase 4 — Tests (agente `test`)
 
-- ~~Migrar los tests de CLI con flags viejos~~: hecho en la Fase 2 (`bd3c229`). De la lista siguiente, `test_teach_cli.py` y `test_batch_report.py` ya existen desde la Fase 2: ampliarlos, no recrearlos.
+- Los tests de CLI con flags viejos ya se migraron en la Fase 2 (`bd3c229`). De la lista siguiente, `test_teach_cli.py` y `test_batch_report.py` ya existen desde la Fase 2: ampliarlos, no recrearlos.
 - Nuevos: `test_teach_cli.py`, `test_library.py`, `test_batch_report.py`, `test_teach_session.py`, `test_ui_common.py`.
 - **Pendientes que dejó la Fase 2:** la poda a 5 respaldos y el sufijo `_2`..`_10` de respaldos en el mismo segundo siguen sin test.
 - **Cubrir lo que la Fase 1 dejó sin test directo:** `backup`/`list_backups`/`restore_backup`/`clear` (incluido el sufijo `_2`..`_10` de respaldos en el mismo segundo y la poda a 5), `delete`/`relabel`/`write` que respaldan, `DEFAULT_MAX_PER_LABEL == 3`, `warn_missing_sign` en `read` y en `train`, que `templates` ya no es un comando, `qc.run_qc` con un fotograma chico y sidecar válido, y `teach --eval` con una corrida `--roi-only` completa.
@@ -138,7 +138,24 @@ Estructura de fuente única (decidida):
 
 **Compuerta 5.** `test_docs.py` verde con el verificador ampliado, búsqueda sin ningún `teach --<flag viejo>`, y los comandos de solo lectura de los docs ejecutados tal cual.
 
+**Las rutas de esta sección son las de entonces.** La tabla y la lista de arriba son lo que se decidió antes de escribir; la reorganización posterior (abajo) cambió las rutas.
+
 **Lo que hizo el `writer` (2026-10-11).** README, guía, ARQUITECTURA, CONFIG y CLAUDE.md reescritos con la estructura de la tabla y el glosario de la Fase 3.5. `AUDITORIA_v5.md` y `PLAN_v5.md` copiados a `docs/historia/` con una nota de procedencia (el `writer` no puede borrar: los originales `docs/AUDITORIA_v5.md` y `PLAN_v5.md` los quita la sesión principal con `git rm`). `min_count` nunca fue un campo de `config.json` (era el flag `--min-count` del viejo `templates`): CONFIG solo documenta `cluster_hamming` como clave ignorada. Las cifras del Quickstart y del resultado de la ronda final quedan marcadas **Pendiente** hasta la Fase 6.
+
+**Reorganización en carpetas (2026-10-11, sin commitear).** La documentación pasó a una estructura por tarea, con el mapa de documentos como única lista en el README:
+
+| antes | ahora |
+|---|---|
+| README: instalación | `docs/empezar/instalar.md` |
+| README: Quickstart, re-calibrar una corrida, Excel | `docs/empezar/primera-corrida.md` |
+| `docs/GUIA_CALIBRACION.md` §1-3 y §5 | `docs/calibrar/guia.md` (la ronda final pasó a ser §4) |
+| `docs/GUIA_CALIBRACION.md` §4 (ejemplo) | `docs/calibrar/ejemplo-img_8102.md` |
+| README: Troubleshooting + guía §6 | `docs/diagnosticar/problemas.md` |
+| README: referencia de comandos / formato de salida / carpetas | `docs/referencia/comandos.md`, `salidas.md`, `carpetas.md` |
+| `docs/CONFIG.md` | `docs/referencia/config.md` |
+| `docs/ARQUITECTURA.md` | `docs/diseno/arquitectura.md` y `docs/diseno/decisiones.md` |
+| README: Tests | `docs/contribuir.md` (con flujo de agentes, convenciones y trampas) |
+| `PLAN_CONTINUACION.md` (raíz), `docs/historia/PLAN_v5.md` | `docs/plans/` |
 
 ### Fase 6 — Entrenamiento final (vos, con la guía)
 
@@ -147,21 +164,21 @@ Estructura de fuente única (decidida):
 3. Ampliar la prueba donde sea chica (`teach test suggest <id> 20`, `teach test label <id>`).
 4. `teach train` → `teach test eval`. Iterar con `samples suggest --strategy uncertain` en las corridas que salgan peor. `img_8112` se mide primero como **video sin entrenamiento**.
 5. Fijar los umbrales `acceptance` en `calib/config.json` a partir de lo medido.
-6. `batch videos/*.MOV --no-skip-existing` → `absorbancia.csv` por corrida y `runs/batch_report.csv` con el veredicto. Las corridas en `revisar` vuelven al paso 4.
-7. El `writer` actualiza el Quickstart y el ejemplo de la guía con las cifras reales.
+6. `batch videos/*.MOV --no-skip-existing` → `absorbance.csv` por corrida y `runs/batch_report.csv` con el veredicto. Las corridas en `review` vuelven al paso 4.
+7. El `writer` completa los **Pendiente** con las cifras reales: el Quickstart (`docs/empezar/primera-corrida.md`), la ronda final de la guía (`docs/calibrar/guia.md` §4) y la salida de `doctor`, que hoy muestra `absorbancia.csv`.
 
 **Sobre los números.** Los umbrales no se fijan de antemano. Con 20–40 muestras de prueba por corrida, una exactitud del 95 % tiene un intervalo muy ancho (la auditoría lo marca para 8102), así que conviene ampliar la prueba antes de decidir los umbrales.
 
 ### Cierre — commits
 
-Desde la Fase 2 se commitea al cerrar cada fase (con `/commit`, pidiendo el plan antes). Al final, un commit con los datos del entrenamiento: `calib/templates/`, `truth.csv`/`test.csv`, `runs/*/out/` y `runs/batch_report.csv`. Después borrar `COMMITS_PENDIENTES.md` y, si ya no hacen falta, los `old_data/snapshot_*`.
+Desde la Fase 2 se commitea al cerrar cada fase (con `/commit`, pidiendo el plan antes). Al final, un commit con los datos del entrenamiento: `calib/templates/`, `truth.csv`/`test.csv`, `runs/*/out/` y `runs/batch_report.csv`. Después, si ya no hacen falta, borrar los `old_data/snapshot_*`.
 
 ## 4. Decisiones que siguen abiertas
 
 | # | decisión | cuándo | recomendación |
 |---|---|---|---|
-| 1 | ¿Se retiran `cluster_hamming`, `min_count` y `RunPaths.glyph_sheet`? | Fase 3 | Retirarlos del código y dejar que `config.load` ignore las claves viejas |
-| 2 | Un respaldo por sesión de UI (ver Fase 3) | Fase 3 | Sí: es la protección real contra una sesión de borrados |
+| 1 | ¿Se retiran `cluster_hamming`, `min_count` y `RunPaths.glyph_sheet`? | resuelta en Fase 3 (`e30343d`) | Retirados del código; `config.load` ignora la clave vieja (`docs/referencia/config.md`, *Claves que ya no se usan*) |
+| 2 | Un respaldo por sesión de UI (ver Fase 3) | resuelta en Fase 3 (`e30343d`) | `TeachSession` toma un solo respaldo antes del primer cambio (`docs/diseno/decisiones.md`) |
 | 3 | ¿El aviso del `-` en `read` va a stderr siempre o solo con `verbose`? | resuelta en Fase 2: ya sale una sola vez por corrida | Siempre en `batch`/`run` una sola vez por corrida, no por fotograma |
 | 4 | Umbrales de aceptación (`acceptance`) | Fase 6 | Los fijás vos con los datos medidos |
 | 5 | ¿`extract_frames` (12 parámetros) y `cmd_doctor`/`cmd_batch` se extraen a módulos? | después del plan | Dejarlo fuera: el plan ya es grande |
@@ -169,15 +186,14 @@ Desde la Fase 2 se commitea al cerrar cada fase (con `/commit`, pidiendo el plan
 ## 5. Riesgos
 
 - **Los commits 3 a 5 no son autónomos** (código y tests de varias fases comparten archivos): `git bisect` entre ellos no funciona. Desde la Fase 2 los commits se hacen al cerrar cada fase y sí quedan sanos.
-- ~~**La Fase 2 rompe tests por diseño.**~~ Resuelto: los tests viejos se migraron junto con el código (`bd3c229`) y los únicos rojos son las 2 previstas de `test_docs`.
 - **Las UIs no tienen tests del loop.** Un error en la Fase 3 puede pasar la suite y romper la ventana. Por eso la prueba manual de la Compuerta 3 no es opcional.
 - **El golden tarda ~25 minutos.** Correrlo en segundo plano mientras se revisa otra cosa; 8110 sola sirve de prueba rápida.
 - **Los agentes dicen "hecho" antes de que sea cierto.** En las fases 0 a 2 verifiqué por mi cuenta la suite y el golden de 8110 después de cada informe, y la revisión de código encontró problemas reales que los tests no veían (5 corregidos en la Fase 1, 10 en la Fase 2). Mantener ese hábito.
 
 ## 6. Archivos de referencia
 
-- Plan completo: `C:\Users\marco\.claude\plans\a-partir-dela-informacion-cozy-hellman.md`
-- Auditoría de partida: `docs/historia/AUDITORIA_v5.md`
-- Commits propuestos: `COMMITS_PENDIENTES.md`
+- Plan completo: este documento (el original, fuera del repositorio, ya está volcado acá).
+- Auditoría de partida: [`docs/historia/AUDITORIA_v5.md`](../historia/AUDITORIA_v5.md)
 - Red de seguridad: `old_data/` (`golden_f0/`, `snapshot_f0_*`, `snapshot_f1_*`) y `calib/.backups/pre_v5_20261010/`
-- Plan anterior de `teach` por áreas (cerrado en la Fase 2; el árbol de comandos sigue vigente): `docs/historia/PLAN_v5.md`
+- Plan anterior de `teach` por áreas (cerrado en la Fase 2; el árbol de comandos sigue vigente): [`docs/plans/PLAN_v5.md`](PLAN_v5.md)
+- Mapa de la documentación vigente: [README](../../README.md#mapa-de-la-documentación)

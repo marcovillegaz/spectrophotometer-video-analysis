@@ -6,7 +6,7 @@ temporal) mas un indice ``runs/<id>/frames_index.csv`` con ``file,t_s,index``.
 
 La eleccion del binario de ffmpeg no esta cableada: :func:`resolve_ffmpeg`
 prefiere el del PATH del sistema y cae al de ``imageio-ffmpeg`` (dentro del
-venv) si no lo encuentra. Ver ``docs/ARQUITECTURA.md``.
+venv) si no lo encuentra. Ver ``docs/diseno/arquitectura.md``.
 
 Interfaz publica:
     resolve_ffmpeg() -> FFmpegTools

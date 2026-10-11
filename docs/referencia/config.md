@@ -1,5 +1,9 @@
 # Referencia de `config.json`
 
+**Para quién y cuándo leerlo:** para cuando vas a editar un `config.json` a mano, o un mensaje o
+un documento te nombra un campo (`templates.min_score`, `qc.max_shift_px`, `acceptance`…) y querés
+saber qué hace y a quién afecta.
+
 Hay **dos** `config.json`, con el mismo esquema y distinto alcance:
 
 | archivo | qué contiene | quién lo escribe |
@@ -10,8 +14,8 @@ Hay **dos** `config.json`, con el mismo esquema y distinto alcance:
 `new` siembra el de la corrida desde el de `calib/`: hereda lo compartido y deja sin fijar lo que
 es del encuadre de esa sesión (y `acceptance`, que solo se lee de `calib/`). **Cada campo de abajo
 está marcado como 🔗 compartido o 📍 por corrida**, que es la pregunta que uno se hace al editar el
-JSON a mano. Dónde vive cada archivo está en el
-[README](../README.md#estructura-de-carpetas).
+JSON a mano. Dónde vive cada archivo está en
+[carpetas](carpetas.md).
 
 Es un JSON común: **se puede editar a mano** y las etapas siguientes lo respetan. Después de
 editarlo, volvé a correr la etapa afectada (`qc --run <id>`, `read --run <id>` o
@@ -202,7 +206,7 @@ criterio es el mismo para todos los videos. Los flags `--min-accuracy`, `--max-e
 **No hay valores por defecto, a propósito.** Con los tres en `null` no hay veredicto (la columna
 queda vacía y `batch` lo avisa): un criterio que nadie midió daría una confianza que no existe. Se
 fijan con los números de la ronda final de la
-[guía](GUIA_CALIBRACION.md#5-la-ronda-final), sabiendo que con 20-40 muestras de prueba cada
+[guía](../calibrar/guia.md#4-la-ronda-final), sabiendo que con 20-40 muestras de prueba cada
 exactitud tiene un intervalo ancho. Las claves viejas `min_exactitud` y `min_cobertura` se siguen
 aceptando.
 
@@ -216,3 +220,8 @@ Los `config.json` que la tienen siguen cargando sin error: cualquier clave desco
 y desaparece la próxima vez que la herramienta guarda el archivo. No hace falta borrarla a mano.
 (El `min_count` del viejo comando `templates` era un flag, `--min-count`, no un campo de
 `config.json`; desapareció con el comando.)
+
+---
+
+**Siguiente paso:** cómo está armado el programa por dentro, en la
+[arquitectura](../diseno/arquitectura.md).

@@ -18,11 +18,7 @@ video → extract → qc → read → report → absorbance.csv
 
 ## Documentos (cada tema vive en uno solo)
 
-- [README.md](README.md): instalación, [carpetas y dónde vive cada dato](README.md#estructura-de-carpetas), [comandos y flags](README.md#referencia-de-comandos), [formatos de salida](README.md#formato-de-salida).
-- [docs/GUIA_CALIBRACION.md](docs/GUIA_CALIBRACION.md): el proceso de calibración por rondas y sus fundamentos.
-- [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md): módulos, contratos y decisiones de diseño.
-- [docs/CONFIG.md](docs/CONFIG.md): cada campo de `config.json`, incluido `acceptance`.
-- Planes: `PLAN_CONTINUACION.md` (el vigente) en la raíz; los cerrados y la auditoría de partida, en `docs/historia/`.
+La lista de documentos, con el propósito de cada uno, es el [mapa del README](README.md#mapa-de-la-documentación): es la única. Al cambiar algo, actualizá el documento que es dueño del tema y enlazalo desde los demás.
 
 ## Invariantes de diseño (no romperlos)
 

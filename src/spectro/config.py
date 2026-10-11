@@ -2,7 +2,7 @@
 
 Este modulo es el unico lugar donde vive el esquema de configuracion. Todas las
 etapas leen de aca, de modo que calibrar una vez alcanza para todas las
-corridas posteriores. La referencia campo por campo esta en ``docs/CONFIG.md``.
+corridas posteriores. La referencia campo por campo esta en ``docs/referencia/config.md``.
 
 Interfaz publica:
     Config.load(path)   -> Config

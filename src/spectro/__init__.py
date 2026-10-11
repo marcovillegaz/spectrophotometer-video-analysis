@@ -2,7 +2,7 @@
 
 El paquete convierte un video de la pantalla del equipo en una serie temporal
 absorbancia vs tiempo (CSV). El pipeline completo esta descrito en
-``docs/ARQUITECTURA.md``; cada modulo documenta su rol en su propio docstring.
+``docs/diseno/arquitectura.md``; cada modulo documenta su rol en su propio docstring.
 
     video -> extract -> runs/<id>/frames/ -> qc -> read -> report -> CSV
 """

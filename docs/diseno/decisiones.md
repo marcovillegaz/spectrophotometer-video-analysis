@@ -1,154 +1,16 @@
-# Arquitectura
+# Decisiones de diseño
 
-Documento de diseño: cómo está armado el pipeline, qué hace cada módulo, qué contrato hay entre
-etapas y **por qué** cada decisión es la que es. Para *usar* el proyecto (comandos, carpetas y
-formatos de salida), mirá el [`README.md`](../README.md); para el detalle de cada campo de
-configuración, [`CONFIG.md`](CONFIG.md); para el proceso de calibración del lector,
-[`GUIA_CALIBRACION.md`](GUIA_CALIBRACION.md).
+**Para quién y cuándo leerlo:** cuando querés saber **por qué** spectro hace algo de una manera y no
+de otra (antes de cambiarlo, o para decidir si confiar en un resultado). Cada decisión dice qué se
+decidió, por qué y qué riesgo cubre. Cómo está armado el programa (pipeline, módulos y contratos)
+está en la [arquitectura](arquitectura.md); de ahí salen también las cifras del primer video del
+proyecto (`20260901_164220`, sep-2026) que se citan acá.
 
-## El problema
-
-Un espectrofotómetro UV/VIS con celda de flujo continuo, sin software de adquisición. La única
-salida es su pantalla LCD. El primer video del proyecto (`20260901_164220`, sep-2026) tenía 20:03
-min de pantalla filmados con un teléfono en soporte fijo (1920×1080, HEVC, 29.97 fps, 36 059
-fotogramas, 1.17 GB), y hay que convertir eso en una serie temporal de absorbancia. Las cifras de
-este documento que no dicen otra cosa vienen de ese video; las corridas actuales (`img_8102`,
-`img_8106`, `img_8110`, `img_8112`) son de otra sesión, con signo.
-
-Tres condiciones del problema mandan sobre todo el diseño:
-
-1. **La cámara está fija.** Entonces la región del número es la misma en todos los fotogramas: se
-   define una vez y se reusa.
-2. **La tipografía es constante y el formato del número es fijo** (`0.597`, `-0.018`). Entonces
-   cada carácter se ve siempre igual, y "OCR" es en realidad un problema de clasificación entre 12
-   glifos conocidos (`0-9`, `.`, `-`).
-3. **Es un instrumento de medición.** Un valor equivocado en el CSV es peor que un valor faltante:
-   contamina el análisis sin dejar rastro. Todo el pipeline está sesgado a descartar antes que a
-   adivinar.
-
-## El pipeline
-
-```
- videos/IMG_8102.MOV         runs/<id>/config.json        calib/templates/
-            │                    (calibrate)               (teach train)
-            │                         │                          │
-            ▼                         ▼                          │
-    ┌───────────────┐          ROI, slots, umbrales,             │
-    │    extract    │          offset de tiempo                  │
-    └───────┬───────┘                 │                          │
-            │  runs/<id>/frames/t_0000601.000.jpg                │
-            │  runs/<id>/frames_index.csv                        │
-            ▼                         │                          │
-    ┌───────────────┐  ◄──────────────┘                          │
-    │      qc       │  mide sobre la ROI + re-registra           │
-    └───────┬───────┘                                             │
-            │  runs/<id>/out/qc_report.csv  (métricas, dx, dy, status)
-            ▼                                                     │
-    ┌───────────────┐  ◄────────────────────────────────────────┘
-    │     read      │  NCC por slot -> caracteres -> valor
-    └───────┬───────┘
-            │  runs/<id>/out/readings.csv   (incluye las descartadas)
-            │  runs/<id>/out/read_meta.json (huella de la biblioteca)
-            │  qc_report.csv                (status actualizado)
-            ▼
-    ┌───────────────┐
-    │    report     │
-    └───────┬───────┘
-            │  runs/<id>/out/absorbance.csv    <- el entregable
-            │  runs/<id>/out/preview.png       <- la curva
-            │  runs/<id>/out/contact_sheet.png <- las 40 lecturas menos confiables
-            ▼
-       batch: runs/batch_report.csv (una fila por corrida, con veredicto)
-```
-
-Cada etapa es un subcomando independiente que lee de disco y escribe a disco. Se puede volver a
-correr `read` sin re-extraer, o `report` con otro `offset_s` sin re-leer. Es deliberado: la
-decodificación del video es lo caro (~3 min) y ajustar parámetros es lo frecuente.
-
-## Módulos
-
-| archivo | responsabilidad | interfaz pública |
-|---|---|---|
-| `cli.py` | argparse con un subcomando por etapa; `resolve_paths` convierte `--run <id>` en las rutas; `doctor`, `new` y `batch` (con su reporte); importa los módulos de forma perezosa para que `doctor` funcione aunque falte una dependencia | `main(argv)`, `build_parser()`, `resolve_paths(args)`, `batch_stages` |
-| `teach_cli.py` | el árbol `teach status \| lib \| train \| check \| samples \| test`: un handler corto por verbo, con el id de la corrida posicional; la tabla de migración de la sintaxis vieja | `register(sub, layout)`, `legacy_error(argv)`, `MIGRATION` |
-| `project.py` | el layout como código: id de corrida, rutas de `calib/` y `runs/<id>/`, siembra de configs; `RunContext` carga todo lo que `teach` necesita de una corrida por un solo camino | `run_id_from_video`, `RunPaths`, `CalibPaths`, `list_runs`, `require_run`, `seed_run_config`, `calib_recipe`, `RunContext.load` |
-| `config.py` | esquema único de `config.json` como dataclasses anidadas; la geometría sabe qué caracteres espera cada celda | `Config.load/save/default`, `ROI`, `DigitsConfig` (`expected_chars`, `required_chars`), `AcceptanceConfig`, `DEFAULT_MAX_PER_LABEL` |
-| `compat.py` | el único mapa de nombres viejos (español) a nuevos (inglés) para encabezados de CSV, claves, estados y flags | `normalize_row`, `read_csv_rows`, `normalize_keys`, `normalize_config`, `normalize_status`, `HEADER_ALIASES`, `VALUE_ALIASES`, `LEGACY_FLAGS` |
-| `extract.py` | resolución de ffmpeg, metadatos, video → fotogramas, convención de nombres | `resolve_ffmpeg`, `probe_video`, `extract_frames`, `frame_name`, `time_from_name`, `load_frames_index`, `load_roi_sidecar` |
-| `imaging.py` | primitivas de imagen compartidas: carga con rotación, recorte, binarización, slots, NCC; el recorte de celdas que usan **todos** los que leen o arman la biblioteca | `load_frame`, `crop_for_reading`, `binarize`, `slot_boxes`, `normalize_glyph`, `read_roi`, `cell_glyphs` (`CellGlyph`), `ncc`, `estimate_shift`, `auto_anchor` |
-| `calibrate.py` | ROI, slots y polaridad → `runs/<id>/config.json`; interactivo, por flags o por registro contra `calib/reference.jpg` | `calibrate(args)`, `auto_calibrate(args)`, `refine_roi`, `pick_reference_frame` |
-| `qc.py` | métricas de calidad sobre la ROI, re-registro, umbrales automáticos, `roi_outside` | `run_qc`, `measure`, `classify`, `suggest_thresholds`, `load_qc_report`, `load_offsets`, `write_qc_report` |
-| `library.py` | la biblioteca de plantillas: cargarla, escribirla (reemplazar o sumar sin duplicar), listarla con su uso, borrar, re-etiquetar, respaldar y restaurar, y su huella | `load`, `write`, `add`, `dedup`, `list_entries`, `usage`, `delete`, `relabel`, `clear`, `backup`, `list_backups`, `restore_backup`, `fingerprint`, `warn_missing_sign` |
-| `read.py` | NCC contra la biblioteca → caracteres → valor; chequeos de confianza y de plausibilidad; huella de la lectura | `run_read`, `read_frame`, `assemble`, `flag_spikes`, `load_readings`, `write_read_meta`, `load_read_meta`, `outputs_state` |
-| `report.py` | CSV final, gráfico y hoja de contacto; cuadre de conteos; el resumen por corrida de `batch` y `teach test eval` | `run_report`, `write_absorbance_csv`, `plot_preview`, `batch_summary` (pura), `load_run_input`, `resolve_acceptance`, `format_batch_table`, `write_batch_report` |
-| `teach.py` | valores escritos → una etiqueta por celda → glifos; entrenamiento desde una o varias corridas y validación leave-one-out | `parse_value`, `value_to_cells`, `build_pool`, `gather_runs`, `train`, `validate`, `evaluate_library`, `coverage`, `load_truth`/`save_truth` |
-| `sampling.py` | qué fotogramas etiquetar: uniforme, azar estratificado, por incertidumbre (con persistencia y diversidad); conjuntos de entrenamiento y prueba | `suggest`, `suggest_uncertain`, `suggest_random`, `suggest_uniform`, `uncertainty`, `assign`, `leakage`, `readings_stale` |
-| `evaluation.py` | el **único evaluador** (`evaluate`) y, sobre él, la evaluación de la prueba: correcta / errónea aceptada / descartada, intervalos de Wilson, tipo de prueba e historial | `evaluate`, `to_validation`, `to_test_report`, `evaluate_test`, `wilson`, `format_test_report`, `write_test_report`, `append_history`, `load_history` |
-| `ui_common.py` | lo que comparten las dos ventanas de OpenCV: colores, `Button`, `BaseLayout`, `hit_test`, dibujo de texto, botones y títulos, apertura y cierre de la ventana | `Button`, `BaseLayout`, `hit_test`, `panel_geometry`, `draw_text`, `draw_button`, `draw_titles`, `open_window` |
-| `calib_ui.py` | UI de calibración manual: panel lateral con botones, lupa del cursor, rotación y vista previa de lectura; la lógica (estado, acciones, layout) es pura | `UIState`, `apply_action`, `apply_key`, `layout_panel`, `preview_reading`, `probe_frames`, `render`, `run_calibration_ui` |
-| `teach_session.py` | todo lo que decide la ventana de `teach`, sin ventana: estado, el reducer único de acciones, agregar y quitar muestras, los pedidos que tocan archivos, el respaldo único por sesión y las teclas | `TeachState`, `apply_action`, `TeachSession`, `TeachParams`, `add_sample`, `key_to_action` |
-| `teach_ui.py` | la ventana de `teach`: solo layout, dibujo y el loop de eventos de OpenCV | `layout_teach`, `render_teach`, `run_teach_ui` |
-
-**Se dio de baja `templates.py`** (y el comando `templates`): agrupaba glifos por hash perceptual y
-pedía etiquetarlos a ciegas. Lo reemplazó `teach`, que etiqueta escribiendo el valor del display
-(ver [abajo](#los-valores-escritos-reemplazan-el-etiquetado-a-ciegas)).
-
-`imaging.py` no estaba en el plan original y se agregó al implementar: `qc`, `teach` y `read`
-tienen que binarizar y recortar **exactamente igual**, porque si la binarización con la que se
-construye una plantilla difiere de la que se usa para compararla, la correlación cae sin motivo
-aparente. Tener una sola implementación compartida (`cell_glyphs`) hace que eso no pueda pasar. Por
-la misma razón hay **un solo evaluador**: la validación leave-one-out, la medida de la biblioteca
-vigente y la prueba leen cada muestra con `evaluation.evaluate`, que a su vez usa `read_frame`.
-
-## Contratos de datos entre etapas
-
-Las columnas completas de cada archivo están en el
-[README](../README.md#formato-de-salida); acá, lo que cada contrato garantiza.
-
-**Nombre de fotograma — `t_0000601.000.jpg`.** Segundos desde el inicio del video, 7 dígitos
-enteros y 3 decimales. Cumple el requisito de que el nombre refleje el tiempo, y como el ancho es
-fijo, **el orden alfabético es el orden temporal**: cualquier `sorted(glob(...))` queda ordenado en
-el tiempo sin parsear nada. `frame_name` y `time_from_name` son inversas exactas y hay un test que
-lo verifica a varios `--fps`.
-
-**`runs/<id>/frames_index.csv`** — `file, t_s, index`. Es redundante con los nombres a propósito:
-si se pierde, `index_from_dir()` lo reconstruye leyendo los nombres.
-
-**`calib/templates/<carácter>_<n>.png`** — glifos binarizados y normalizados a 24×40. El punto
-decimal se guarda como `dot_<n>.png` y el signo como `minus_<n>.png`, porque `.` y `-` no conviene
-ponerlos en un nombre. Se admiten varias plantillas por carácter: `0_0.png` … `0_2.png` son todas
-cero.
-
-**`runs/<id>/out/qc_report.csv`** — el **libro mayor**: un renglón por fotograma extraído, siempre.
-`qc` lo crea con las métricas y el estado inicial; `read` le actualiza la columna `status` con el
-resultado de la lectura; `report` lo usa para el cuadre de conteos. Que exista un solo lugar donde
-está el destino de cada fotograma es lo que permite garantizar que no se pierda ninguno en
-silencio.
-
-**`runs/<id>/out/readings.csv`** — todas las lecturas, incluidas las descartadas, con los caracteres
-crudos que se leyeron, la confianza y el margen. Es lo que se mira cuando una lectura sospechosa hay
-que rastrearla, y la fuente de la incertidumbre del muestreo.
-
-**`runs/<id>/out/read_meta.json`** — la huella de la biblioteca con la que se produjo
-`readings.csv`. Es lo que permite decir si una salida está al día sin comparar fechas.
-
-**`runs/<id>/truth.csv` y `test.csv`** — `file,value`, con el valor como **texto** (conserva
-`-0.000` y los ceros finales). Las muestras de varias corridas se identifican como
-`corrida/archivo`, porque los videos repiten nombres de fotograma.
-
-**Nombres en inglés, archivos viejos que siguen cargando.** Las columnas, claves, estados y flags
-están en inglés; la prosa, en español. Los archivos escritos antes del cambio (encabezados en
-español, `absorbancia.csv`, `roi_fuera`, `misma_corrida`…) se leen a través de `compat.py`, el único
-lugar con el mapa de equivalencias. Los escritores emiten siempre los nombres nuevos y ningún
-archivo se reescribe solo por leerlo.
-
-## Decisiones de diseño
-
-### Una receta compartida y corridas aisladas
+## Una receta compartida y corridas aisladas
 
 La cámara **se re-monta en cada sesión**. El encuadre cambia entre videos, pero el equipo y la
 fuente del display son los mismos. Ese único hecho es el que define el layout (el árbol de carpetas
-está en el [README](../README.md#estructura-de-carpetas)): parte los datos en lo que se comparte
+está en [carpetas](../referencia/carpetas.md)): parte los datos en lo que se comparte
 (`calib/`) y lo que es propio de cada corrida (`runs/<id>/`).
 
 **Por qué `calib/` separada de `runs/`.** La alternativa obvia —un `config.json` por corrida, con
@@ -170,7 +32,7 @@ con fecha en el nombre) y no necesita ningún registro central que mantener sinc
 disco. `project.py` es el único módulo que sabe dónde va cada cosa; todo lo demás recibe las rutas
 ya resueltas por parámetro.
 
-### `calibrate --auto`: el re-registro, aplicado entre sesiones
+## `calibrate --auto`: el re-registro, aplicado entre sesiones
 
 `qc` ya registra cada fotograma contra el fotograma de referencia de su corrida, para compensar la
 deriva lenta de la cámara a lo largo de 20 minutos. `calibrate --auto` es **la misma operación con
@@ -198,19 +60,20 @@ con la UI de `calib_ui`. Su vista previa llama a `read.read_frame` con la biblio
 `calib/templates`, el mismo camino que `read`, así que muestra lo que el pipeline va a hacer con esa
 calibración.
 
-### Template matching, y no Tesseract ni un VLM
+## Template matching, y no Tesseract ni un VLM
 
 | alternativa | por qué se descartó |
 |---|---|
 | **Tesseract** | Está entrenado para texto impreso; con dígitos de LCD de siete u once segmentos confunde 8/B, 0/O, 1/7 sistemáticamente. Además obliga a instalar un binario a nivel de sistema, que era una restricción explícita del proyecto. |
 | **Un VLM por API** | Costo por fotograma, dependencia de red, y sobre todo **no es determinista**: el mismo fotograma puede dar dos respuestas distintas, y no hay forma de auditar por qué. Inaceptable para datos de laboratorio. |
 | **Una CNN entrenada** | Habría que etiquetar cientos de ejemplos para resolver un problema que con cámara fija ya es trivial. |
-| **Template matching (elegido)** | Determinista, sin dependencias externas, y el trabajo manual es etiquetar unas decenas de fotogramas escribiendo su valor. Da además un score de confianza natural (la NCC). Cuánto acierta no se supone: se mide con una prueba aparte (ver la [guía](GUIA_CALIBRACION.md)). |
+| **Template matching (elegido)** | Determinista, sin dependencias externas, y el trabajo manual es etiquetar unas decenas de fotogramas escribiendo su valor. Da además un score de confianza natural (la NCC). Cuánto acierta no se supone: se mide con una prueba aparte (ver la [guía](../calibrar/guia.md)). |
 
 La condición para que funcione es que la cámara esté fija y la tipografía sea constante — y las
-dos se cumplen. Si dejaran de cumplirse, la sección "Cómo extenderlo" dice qué cambiar.
+dos se cumplen. Si dejaran de cumplirse, la sección
+[Cómo extenderlo](arquitectura.md#cómo-extenderlo) dice qué cambiar.
 
-### La ROI se calibra una vez, y se re-registra en cada fotograma
+## La ROI se calibra una vez, y se re-registra en cada fotograma
 
 Con cámara fija, la ROI fija alcanza *en teoría*. En la práctica, medir el corrimiento del primer
 video mostró una **deriva lenta de hasta 3 px en 20 minutos** — el soporte cede, alguien roza la
@@ -235,7 +98,7 @@ corrida sigue: un recorte truncado daría celdas incompletas que el lector compa
 error cortaría la etapa entera por un solo fotograma. Es un estado más del libro mayor, con su
 columna `qc_roi_outside` en el reporte del lote.
 
-### El punto decimal se asume, no se lee
+## El punto decimal se asume, no se lee
 
 El formato es fijo (`0.597`), así que el valor se arma con `decimal_after` de la configuración. El
 punto **sí se lee**, pero sólo como **control de alineación**: es el glifo más chico y el más fácil
@@ -246,7 +109,7 @@ Detalle que sorprende y conviene tener presente: la fuente del equipo es monoesp
 ocupa su propia celda de caracter**. Por eso `0.597` son **5 slots**, no 4, y el reparto uniforme
 de la ROI en 5 partes cae perfecto sobre los caracteres.
 
-### Los valores escritos reemplazan el etiquetado a ciegas
+## Los valores escritos reemplazan el etiquetado a ciegas
 
 Agrupar glifos por hash y pedir que el usuario adivine qué es cada uno (el viejo comando
 `templates`) escalaba mal: con deriva de cámara salían 56 "glifos únicos" cuando el display sólo
@@ -260,7 +123,7 @@ tiene 12 caracteres. `teach` invierte el problema: el usuario escribe el valor d
   la exactitud sería circular. Un `-` o un `7` con un único ejemplo se evalúa sin ninguno: el
   informe lo marca en vez de esconderlo.
 
-### Agregar a la biblioteca deduplica, y la biblioteca se puede auditar
+## Agregar a la biblioteca deduplica, y la biblioteca se puede auditar
 
 Sumar plantillas sin más hace crecer la biblioteca con casi-duplicados, y las variantes de un
 carácter compiten con las de otro por el margen mínimo entre etiquetas. Por eso `library.add`
@@ -268,12 +131,14 @@ descarta lo que ya está (mismo carácter y NCC ≥ 0,95 contra una plantilla ex
 existente contra el tope por carácter (3 por defecto) y es idempotente. El criterio es la **NCC**,
 la misma medida con la que lee el lector, y no el hash perceptual de 8×8: en `img_8102` el hash
 declaraba "duplicado" a un `6` con NCC 0,755 contra la plantilla `6` que el lector confundía con un
-`5` (NCC 0,84), y por eso nunca se agregaba. "Duplicado" tiene que significar "no le aporta nada al
-lector". Cada plantilla lleva además cuántas celdas de las muestras gana bien (`uses`) y cuántas
-gana mal (`errors`): una plantilla con errores o una biblioteca armada con otra geometría se ve de
-inmediato (`teach lib list --usage`), en vez de aparecer como lecturas perdidas.
+`5` (NCC 0,84), y por eso nunca se agregaba (el caso completo, en el
+[ejemplo resuelto](../calibrar/ejemplo-img_8102.md#lección-sobre-el-duplicado)). "Duplicado" tiene
+que significar "no le aporta nada al lector". Cada plantilla lleva además cuántas celdas de las
+muestras gana bien (`uses`) y cuántas gana mal (`errors`): una plantilla con errores o una
+biblioteca armada con otra geometría se ve de inmediato (`teach lib list --usage`), en vez de
+aparecer como lecturas perdidas.
 
-### Una biblioteca compartida, muestras por corrida
+## Una biblioteca compartida, muestras por corrida
 
 La biblioteca (`calib/templates/`) es una sola porque el display es el mismo equipo; las muestras
 (`truth.csv`, `test.csv`) son por corrida porque cada una apunta a fotogramas de un video concreto y
@@ -286,7 +151,7 @@ video), y la validación lee cada muestra con la config de su corrida, no con un
 `teach train --exclude <id>` reserva videos enteros como prueba. El riesgo de compartir es que una
 etiqueta equivocada contamina a todos los videos; por eso el leave-one-out se informa por corrida.
 
-### `teach` por áreas, con el id de la corrida explícito
+## `teach` por áreas, con el id de la corrida explícito
 
 `teach` creció hasta ser un solo comando con unos 30 flags que eran "modos" (`--build`, `--eval`,
 `--suggest`…), con reglas que el parser no podía expresar (un flag que solo valía junto a otro) y
@@ -300,7 +165,7 @@ corresponde lo rechaza el parser.
 * **`samples` y `test` son simétricos**, y un fotograma está en un solo conjunto.
 * **La sintaxis vieja falla con la tabla de migración** en vez de interpretarse a medias.
 
-### Respaldo de la biblioteca, uno por sesión de la ventana
+## Respaldo de la biblioteca, uno por sesión de la ventana
 
 Una biblioteca compartida que se puede borrar plantilla por plantilla necesita una red: ya pasó una
 vez que reconstruirla con las muestras de un solo video borró la plantilla `-`. Antes de cada cambio
@@ -313,7 +178,7 @@ que importa. Por eso la ventana de `teach` (`TeachSession`) toma **un solo respa
 primer cambio** a la biblioteca, y las operaciones siguientes de esa sesión no respaldan. Abrir la
 ventana solo para etiquetar no respalda nada.
 
-### La huella de la biblioteca
+## La huella de la biblioteca
 
 Cambiar la biblioteca invalida en silencio todo lo que se leyó con la anterior: las lecturas, sus
 incertidumbres y las evaluaciones. Comparar fechas de archivo no alcanza: una restauración deja la
@@ -323,7 +188,7 @@ nombres de todas las plantillas; `read` la guarda en `read_meta.json` y `teach t
 `teach_history.csv`. `teach status`, `teach test eval` y `batch` la comparan con la de hoy y marcan
 las salidas `stale`. Las salidas anteriores a la huella se juzgan por fecha, como antes.
 
-### El veredicto del lote no tiene umbrales por defecto
+## El veredicto del lote no tiene umbrales por defecto
 
 `batch` resume cada corrida (descartes por motivo, cobertura, evaluación de la prueba con la
 biblioteca vigente) en `runs/batch_report.csv`, calculado por una función pura
@@ -332,17 +197,17 @@ biblioteca vigente) en `runs/batch_report.csv`, calculado por una función pura
 midió da una confianza que no existe; y una corrida sin prueba, o con salidas de otra biblioteca,
 queda en `review` aunque sus números se vean bien, porque no hay con qué verificarlos.
 
-### La semilla: reproducible cuando se pide
+## La semilla: reproducible cuando se pide
 
 Las sugerencias de `suggest` usan siempre la misma semilla si no se pasa `--seed`: repetir el
 comando da la misma lista, que es lo que se espera de una herramienta de laboratorio. El botón
 `Aleatorio` de la ventana, en cambio, es no determinista salvo que se pase `--seed`: sirve para
 recorrer el video sin sesgo, y con semilla se puede repetir una sesión exacta.
 
-### Muestreo por incertidumbre y conjunto de prueba
+## Muestreo por incertidumbre y conjunto de prueba
 
 El ciclo de calibración (etiquetar, agregar, evaluar, repetir) es aprendizaje supervisado con humano
-en el circuito. La [guía de calibración](GUIA_CALIBRACION.md) lo explica paso a paso; acá, las decisiones
+en el circuito. La [guía de calibración](../calibrar/guia.md) lo explica paso a paso; acá, las decisiones
 y el riesgo que cada una cubre.
 
 * **La prueba es al azar, estratificado por tiempo, nunca por incertidumbre.** Una prueba formada por
@@ -380,7 +245,7 @@ y el riesgo que cada una cubre.
   aparece en la incertidumbre. Las `erróneas aceptadas` de `teach test eval` son la señal para decidir
   qué etiquetar después.
 
-### El signo se decide por tinta, y la rotación se aplica al cargar
+## El signo se decide por tinta, y la rotación se aplica al cargar
 
 Algunas mediciones son negativas (`-0.018`). El display no mueve los dígitos: el `-` aparece en una
 **celda fija a la izquierda** (`digits.sign_slot`) que queda vacía cuando el valor es positivo. Esa
@@ -396,7 +261,7 @@ Cuando el teléfono queda torcido, `rotation_deg` rota cada fotograma en `imagin
 ffmpeg recorta (`--roi-only`) sobre el fotograma sin rotar, y porque así el ángulo se puede corregir
 sin volver a decodificar el video.
 
-### El QC mide sobre la ROI, no sobre el fotograma entero
+## El QC mide sobre la ROI, no sobre el fotograma entero
 
 Que la mitad de la mesa esté en penumbra, o que alguien pase por el fondo, no afecta la lectura.
 Lo único que decide si un fotograma sirve es **cómo se ve el número**. Medir sobre el fotograma
@@ -407,7 +272,7 @@ Los umbrales se auto-sugieren de la distribución observada con **mediana ± 6·
 k·σ: los fotogramas malos son justamente los outliers, y con σ ellos mismos inflarían el umbral que
 debería rechazarlos. La MAD es insensible a eso.
 
-### Las filas descartadas se omiten, no se interpolan
+## Las filas descartadas se omiten, no se interpolan
 
 `absorbance.csv` lleva sólo lecturas reales. Interpolar generaría datos que parecen medidos y no
 lo son — en un análisis cinético eso es exactamente el tipo de error que no se detecta después. Un
@@ -418,21 +283,21 @@ El **cuadre de conteos** al final de `report` verifica que
 `filas(absorbance.csv) + descartadas(qc_report.csv) = fotogramas extraídos`. Si alguna vez no
 cuadra, se perdió un fotograma en silencio y hay un bug.
 
-### La confianza se mide con margen, no sólo con score
+## La confianza se mide con margen, no sólo con score
 
 Aceptar un dígito por tener NCC alta no alcanza: un `8` degradado puede correlacionar 0.85 con la
 plantilla del `8` **y** 0.84 con la del `6`. Por eso se exige además un **margen** contra la mejor
 plantilla de una etiqueta *distinta* (`min_margin`). El margen se calcula entre etiquetas, no entre
 plantillas, para que tener varias plantillas del `0` no penalice la confianza del `0`.
 
-### Un spike aislado es un dígito mal leído
+## Un spike aislado es un dígito mal leído
 
 Después de leer todo, `flag_spikes` marca los puntos que se despegan de **ambos** vecinos por
 encima de `max_rate`, **y** cuyos vecinos son coherentes entre sí. La segunda condición es la que
 evita descartar una transición real y rápida del experimento: una transición verdadera se sostiene
 en el tiempo, un dígito mal leído vuelve solo al valor anterior en la muestra siguiente.
 
-### Las UI: lógica pura y loop delgado
+## Las UI: lógica pura y loop delgado
 
 Los loops de OpenCV no se pueden testear sin ventana. Por eso en las dos UI el estado, las acciones,
 el layout y la vista previa son funciones puras (`calib_ui`, `teach_session`), y el loop solo lee
@@ -441,14 +306,14 @@ de `calib_ui`). En `teach` hay **un solo reducer** de acciones (`apply_action`),
 traducen por tabla, y el valor se escribe con el teclado físico: la ventana ya no tiene teclado
 numérico de botones.
 
-### El binario de ffmpeg se resuelve en runtime
+## El binario de ffmpeg se resuelve en runtime
 
 `resolve_ffmpeg()` prueba el PATH del sistema y cae a `imageio-ffmpeg` (que vive en el venv). Nada
 queda cableado: si la instalación de ffmpeg falla o se pospone, el pipeline sigue funcionando sin
 tocar una línea de código, sólo más lento y leyendo los metadatos del stderr en vez de con ffprobe.
 `extract` informa en su salida qué binario y versión usó, así queda en el log de la corrida.
 
-### La frecuencia de muestreo es un parámetro, y no es gratis elegirla mal
+## La frecuencia de muestreo es un parámetro, y no es gratis elegirla mal
 
 El dígito menos significativo del display se redibuja varias veces por segundo. En el primer video,
 a 1 Hz **el 59 % de los fotogramas lo agarraba a mitad del refresco** y quedaba ilegible — y
@@ -462,35 +327,7 @@ vecinos (± 2 s), las lecturas de confianza 0.60–0.65 se desviaban **lo mismo*
 p95 0.011) que las de confianza > 0.80. El umbral de confianza gobierna cuántos datos hay, no cuán
 buenos son — lo cual es la señal de que está bien calibrado.
 
-## Cómo extenderlo
+---
 
-**Si cambia el display o el formato del número.** Volvé a correr `calibrate` (nueva ROI, nuevo
-`n_digits`, nuevo `decimal_after`) sobre una corrida representativa, etiquetá unas muestras y
-rearmá la biblioteca con `teach train`, y promové el resultado con `calibrate --promote`. Ni una
-línea de código: el lector no sabe nada del equipo, todo está en `calib/config.json` y en
-`calib/templates/`.
-
-**Si el display fuera de siete segmentos con los dígitos pegados** — o si por cualquier motivo el
-reparto uniforme de slots no cae bien — están los cortes manuales: `calibrate --splits
-0,26,52,78,104,127`. Si ni eso alcanza porque los caracteres se tocan, el próximo paso es
-segmentación por componentes conexas dentro de `slot_boxes`, que es el único punto que habría que
-tocar.
-
-**Si aparece un segundo número en pantalla** (%T, longitud de onda, temperatura): hoy `Config`
-tiene una sola `roi`. La extensión natural es pasar `roi`/`digits` a una lista de "campos", con
-`read_frame` devolviendo un valor por campo y `report` escribiendo una columna por campo. Las
-funciones de `imaging.py` y `read.py` ya trabajan sobre una ROI recibida por parámetro, así que el
-cambio queda contenido en `config.py`, en los bucles de `read.py`/`report.py` y en `calibrate.py`.
-
-**Si la cámara deja de estar fija** (video a mano alzada). El re-registro por template matching ya
-resuelve traslaciones de hasta `max_shift_px`. Para rotación o escala haría falta reemplazar
-`estimate_shift` por una estimación de homografía (`cv2.findTransformECC` o detección de features
-+ `estimateAffinePartial2D`) y aplicar el warp antes de recortar. El resto del pipeline no se
-entera: sigue recibiendo una ROI ya alineada.
-
-**Procesar varios videos en lote** ya está resuelto: `batch` encadena
-`new → extract → calibrate --auto → qc → read → report` por cada video, saltea las corridas
-terminadas, deja pendientes las que no engancharon la calibración automática y escribe
-`runs/batch_report.csv`. Lo que deliberadamente **no** hace es un CSV combinado de absorbancias ni un
-índice de corridas: no hacían falta, y un índice sería estado global que se desincroniza del disco.
-El reporte del lote se recalcula entero en cada `batch` a partir de los archivos de cada corrida.
+**Siguiente paso:** cómo correr los tests, el flujo de agentes y las convenciones del código, en
+[contribuir](../contribuir.md).
