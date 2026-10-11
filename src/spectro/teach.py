@@ -281,7 +281,7 @@ def add_to_library(
 
 
 # --------------------------------------------------------------------------
-# Varias corridas a la vez (teach --build --all-runs)
+# Varias corridas a la vez (teach train / teach check)
 # --------------------------------------------------------------------------
 def gather_runs(
     runs_dir: Path | str, calib_dir: Path | str, exclude: list[str] | tuple[str, ...] = ()

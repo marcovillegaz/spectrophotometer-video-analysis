@@ -10,11 +10,12 @@ Comandos:
     new         da de alta una corrida a partir de un video
     extract     video -> runs/<id>/frames/
     calibrate   define ROI, slots y polaridad -> runs/<id>/config.json
-    qc          filtro de calidad -> runs/<id>/out/qc_report.csv
+    teach       biblioteca, muestras y pruebas, por areas (ver teach_cli.py)
+    qc         filtro de calidad -> runs/<id>/out/qc_report.csv
     read        fotogramas -> valores numericos
     report      -> absorbancia.csv, preview.png, contact_sheet.png
     run         extract -> qc -> read -> report
-    batch       new -> extract -> calibrate --auto -> run, por cada video
+    batch       new -> extract -> calibrate --auto -> run, por cada video, y runs/batch_report.csv
 
 Las rutas no se tipean: ``--run <id>`` deriva las ocho desde ``RunPaths``
 (ver ``project.py``). Un flag explicito siempre le gana a lo derivado, asi que
@@ -27,13 +28,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import DEFAULT_MAX_PER_LABEL, ROI, Config
+from . import teach_cli
+from .config import ROI, Config
 from .project import (
     CALIB_DIR,
     RUNS_DIR,
     VIDEOS_DIR,
     CalibPaths,
-    RunContext,
     RunPaths,
     list_runs,
     run_id_from_video,
@@ -68,11 +69,6 @@ _DERIVED_PATHS = {
     "readings": lambda run, calib: run.readings,
     "templates_dir": lambda run, calib: calib.templates,
     "preview": lambda run, calib: run.preview,
-    "truth": lambda run, calib: run.truth,
-    "teach_report": lambda run, calib: run.teach_report,
-    "test": lambda run, calib: run.test,
-    "test_report": lambda run, calib: run.test_report,
-    "history": lambda run, calib: run.history,
 }
 
 
@@ -114,12 +110,6 @@ def resolve_paths(args: argparse.Namespace) -> str | None:
     # doctor, new y batch miran el layout entero, no una corrida: no exigen --run.
     if not getattr(args, "needs_paths", True):
         return None
-    # teach --eval-all / --all-runs recorren todas las corridas: solo necesitan la biblioteca.
-    if getattr(args, "eval_all", False) or getattr(args, "all_runs", False):
-        if getattr(args, "templates_dir", None) is None:
-            args.templates_dir = str(args.calib_paths.templates)
-        return None
-
     presentes = [name for name in _DERIVED_PATHS if hasattr(args, name)]
     if args.run_paths is not None:
         for name in presentes:
@@ -266,6 +256,11 @@ def cmd_batch(args: argparse.Namespace) -> int:
     Una corrida que no engancha la calibracion automatica **no se procesa a
     medias**: se saltea y se informa al final, para calibrarla a mano.
     """
+    from .report import acceptance_for
+
+    # los umbrales se validan antes de procesar nada: un flag mal tipeado no debe costar horas
+    acc = acceptance_for(args.calib_paths.config, args.min_exactitud, args.max_error,
+                         args.min_cobertura)
     videos = _expand_videos(args.videos)
     if not videos:
         print("No hay videos que procesar.")
@@ -316,9 +311,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
 
     print(f"\n== resumen del lote ==")
     for run_id in hechas:
-        run = RunPaths.for_run(run_id, runs_dir=args.runs_dir, calib_dir=args.calib_dir)
-        resumen = _run_summary(run) if args.until == "report" else f"preparada hasta {args.until}"
-        print(f"  [ok]       {run_id:22s} {resumen}")
+        print(f"  [ok]       {run_id:22s} " + ("procesada" if args.until == "report"
+                                                else f"preparada hasta {args.until}"))
     for run_id, motivo in salteadas:
         print(f"  [salteada] {run_id:22s} {motivo}")
     for run_id, motivo in fallidas:
@@ -328,7 +322,35 @@ def cmd_batch(args: argparse.Namespace) -> int:
         print("\n  Pendientes de calibracion manual:")
         for run_id in pendientes:
             print(f"    python -m spectro calibrate --run {run_id}")
+    if args.until == "report":
+        _batch_report(args, hechas + [r for r, m in salteadas if m == "ya procesada"], acc)
     return 1 if fallidas else 0
+
+
+def _batch_report(args: argparse.Namespace, run_ids: list[str], acc) -> None:
+    """Imprime y escribe ``runs/batch_report.csv``: una fila por corrida procesada (o ya hecha)."""
+    from .library import fingerprint
+    from .report import batch_summary, format_batch_table, load_run_input, write_batch_report
+
+    if not run_ids:
+        return
+    calib = args.calib_paths
+    lib, huella = teach_cli.library_or_empty(args), fingerprint(calib.templates)
+    entradas = [
+        load_run_input(RunPaths.for_run(r, runs_dir=args.runs_dir, calib_dir=args.calib_dir),
+                       calib, lib, huella=huella)
+        for r in sorted(run_ids)
+    ]
+    filas = batch_summary(entradas, acc)
+    destino = write_batch_report(filas, Path(args.runs_dir) / "batch_report.csv")
+    print("\n== reporte del lote ==")
+    for line in format_batch_table(filas):
+        print(line)
+    if not acc.is_set():
+        print("  sin umbrales de aceptacion: el veredicto queda vacio. Fijalos con "
+              "--min-exactitud / --max-error / --min-cobertura o en la seccion 'acceptance' "
+              "de calib/config.json")
+    print(f"  reporte: {destino}")
 
 
 def _expand_videos(patrones: list[str]) -> list[Path]:
@@ -349,25 +371,6 @@ def _expand_videos(patrones: list[str]) -> list[Path]:
             elif "*" not in patron:
                 print(f"  aviso: no existe {c}, se ignora")
     return list(vistos)
-
-
-def _run_summary(run: RunPaths) -> str:
-    """``N validas, cobertura X%, absorbancia [min, max]`` leido de las salidas."""
-    import csv
-
-    if not run.absorbance.exists():
-        return "sin salida"
-    with run.absorbance.open(encoding="utf-8") as fh:
-        filas = list(csv.DictReader(fh))
-    if not filas:
-        return "0 validas"
-    valores = [float(f["absorbancia"]) for f in filas]
-    total = len(filas)
-    if run.qc_report.exists():
-        with run.qc_report.open(encoding="utf-8") as fh:
-            total = sum(1 for _ in csv.DictReader(fh)) or total
-    return (f"{len(filas)} validas de {total} ({100 * len(filas) / total:.0f}%), "
-            f"absorbancia [{min(valores):.3f}, {max(valores):.3f}]")
 
 
 def cmd_extract(args: argparse.Namespace) -> int:
@@ -416,264 +419,6 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     from .calibrate import calibrate
 
     return calibrate(args)
-
-
-def _teach_context(args: argparse.Namespace) -> RunContext:
-    """Config, fotogramas, offsets y muestras de la corrida, comunes a todos los modos de ``teach``."""
-    ctx = RunContext.load(
-        args.run_paths, args.calib_paths, config=args.config, frames_dir=args.frames_dir,
-        qc_report=args.qc_report, truth=args.truth, test=args.test,
-        templates_dir=args.templates_dir,
-    )
-    if not ctx.has_qc:
-        print(f"aviso: no existe {args.qc_report}; sin QC no se compensa la deriva de camara. "
-              "Corre primero: python -m spectro qc")
-    return ctx
-
-
-def _teach_suggestions(args, cfg, items, train, test):
-    """Fotogramas a etiquetar segun ``--strategy`` y ``--for``. Devuelve ``(sugerencias, avisos)``."""
-    from . import sampling as S
-    from .extract import time_from_name
-    from .read import load_readings
-
-    para_prueba = args.for_set == "test"
-    strategy = "random" if para_prueba else args.strategy
-    avisos: list[str] = []
-    if para_prueba and args.strategy not in ("mixed", "random"):
-        avisos.append("la prueba siempre se elige al azar: una prueba por incertidumbre "
-                      "subestimaria el error real.")
-    # la prueba se aleja del entrenamiento, y el entrenamiento de la prueba: no hay fugas
-    otro = test if not para_prueba else train
-    avoid = [time_from_name(x.archivo) for x in otro]
-    exclude = {x.archivo for x in train + test}
-    readings = None
-    stale = False
-    if strategy in ("mixed", "uncertain") and Path(args.readings).exists():
-        readings = load_readings(args.readings)
-        stale = S.readings_stale(args.readings, args.templates_dir, args.config)
-    sug, notas = S.suggest(
-        strategy, items=items, readings=readings, cfg=cfg, exclude=exclude, n=args.suggest or args.queue,
-        seed=args.seed, gap_s=args.gap, avoid_times=avoid, stale=stale,
-    )
-    return sug, avisos + notas
-
-
-def _teach_eval_all(args: argparse.Namespace) -> int:
-    """Una linea por corrida con ``test.csv``: la biblioteca es compartida, la prueba no."""
-    from . import teach as T
-    from .evaluation import evaluate_test, wilson
-    from .library import load
-
-    library = load(args.templates_dir)
-    print(f"== teach --eval-all (biblioteca: {len(library)} plantillas) ==")
-    print(f"  {'corrida':22s} {'tipo':14s} {'n':>3s} {'correctas':>10s} {'erroneas':>8s} "
-          f"{'descart.':>8s}  exactitud [IC95]")
-    hubo = False
-    for run_id in list_runs(runs_dir=args.runs_dir):
-        run = RunPaths.for_run(run_id, runs_dir=args.runs_dir, calib_dir=args.calib_dir)
-        if not run.config.exists():
-            continue
-        ctx = RunContext.load(run, args.calib_paths)
-        if not ctx.test:
-            continue
-        hubo = True
-        rep = evaluate_test(ctx.test, ctx.cfg, ctx.frames_dir, ctx.offsets, library, ctx.train,
-                            args.gap)
-        lo, hi = wilson(rep.correctas, rep.n)
-        print(f"  {run_id:22s} {rep.tipo:14s} {rep.n:3d} {rep.correctas:10d} {rep.erroneas:8d} "
-              f"{rep.descartadas:8d}  {rep.exactitud:.1%} [{lo:.0%}-{hi:.0%}]")
-    if not hubo:
-        print("  ninguna corrida tiene test.csv. Arma uno con: teach --run <id> --suggest 20 --for test")
-    return 0
-
-
-def _teach_all_runs(args: argparse.Namespace) -> int:
-    """``--build --all-runs``: una biblioteca compartida con las muestras de TODAS las corridas."""
-    from . import teach as T
-
-    if not (args.build or args.check):
-        raise ValueError("--all-runs se usa con --build (arma la biblioteca) o --check (solo valida)")
-    runs = T.gather_runs(args.runs_dir, args.calib_dir, args.exclude_runs or [])
-    if not runs:
-        raise ValueError(f"Ninguna corrida de {args.runs_dir}/ tiene muestras en truth.csv. "
-                         "Etiqueta algunas con: teach --run <id>")
-    print("== teach --all-runs ==")
-    for run in runs:
-        print(f"  {run.run_id:22s} {len(run.train):3d} muestras de entrenamiento")
-    if args.exclude_runs:
-        print(f"  excluidas (quedan como prueba): {', '.join(args.exclude_runs)}")
-    res = T.train(runs, args.templates_dir, build=args.build, keep=args.keep,
-                  max_per_label=args.max_per_label)
-    for e in res.errores:
-        print(f"  muestra descartada: {e}")
-    if not res.datas:
-        raise ValueError("Ninguna muestra se pudo procesar.")
-
-    print("  cobertura: " + "  ".join(f"{k}:{v}" for k, v in res.coverage.items()))
-    if res.faltan:
-        print(f"  aviso: faltan ejemplos de {', '.join(res.faltan)}; esos caracteres no se van a leer")
-    if res.nuevas is not None:
-        print(f"  {sum(res.nuevas.values())} plantillas escritas en {args.templates_dir}  "
-              f"({', '.join(f'{k}:{v}' for k, v in sorted(res.nuevas.items()))})")
-    if res.aviso_signo:
-        print("  " + res.aviso_signo.replace("\n", "\n  "))
-
-    loo, vigente = res.loo, res.vigente
-    print("  " + T.format_report(loo, "leave-one-out sobre todas las corridas")[0])
-    for line in T.format_report(loo, "")[1:]:
-        print("  " + line)
-    if vigente is None:
-        print("  no hay biblioteca vigente todavia")
-    print(f"  {'corrida':22s} {'leave-one-out':>14s} {'biblioteca vigente':>20s}")
-    for run in runs:
-        a = T.split_by_run(loo, run.run_id)
-        b = T.split_by_run(vigente, run.run_id) if vigente else None
-        print(f"  {run.run_id:22s} {a.exact:>6d}/{a.total:<7d} "
-              f"{(str(b.exact) + '/' + str(b.total)) if b else '-':>20s}")
-        T.write_report(a, run.paths.teach_report)
-    print("  informes por corrida: runs/<id>/out/teach_report.csv")
-    print("  las pruebas (test.csv) no se usaron; para medirlas: teach --eval-all")
-    return 0
-
-
-def cmd_teach(args: argparse.Namespace) -> int:
-    """Calibra el lector con valores reales y lo evalua sobre un conjunto de prueba."""
-    from . import teach as T
-    from .evaluation import append_history, evaluate_test, format_test_report, write_test_report
-    from .library import delete, list_entries, load
-    from .sampling import assign, leakage
-
-    if args.eval_all:
-        return _teach_eval_all(args)
-    if args.all_runs:
-        return _teach_all_runs(args)
-
-    ctx = _teach_context(args)
-    cfg, frames_dir, offsets = ctx.cfg, ctx.frames_dir, ctx.offsets
-    names, items = ctx.names(), ctx.items()
-    train, test = ctx.train, ctx.test
-    samples = train
-
-    if args.library or args.delete:
-        entries = list_entries(args.templates_dir)
-        if args.delete:
-            by_name = {e.path.stem: e for e in entries}
-            quitar = []
-            for name in args.delete:
-                e = by_name.get(Path(name).stem)
-                if e is None:
-                    raise ValueError(f"No existe la plantilla {name!r} en {args.templates_dir}")
-                quitar.append(e.path)
-            delete(quitar)
-            print(f"{len(quitar)} plantillas borradas de {args.templates_dir}")
-            entries = list_entries(args.templates_dir)
-        print(f"== biblioteca: {len(entries)} plantillas en {args.templates_dir} ==")
-        for ch in T.ALL_CHARS:
-            stems = [e.path.stem for e in entries if e.label == ch]
-            print(f"  {ch!r:5} x{len(stems)}  {' '.join(stems)}")
-        if not (args.add or args.add_test or args.build or args.check or args.eval or args.suggest):
-            return 0
-
-    if args.suggest:
-        sug, avisos = _teach_suggestions(args, cfg, items, train, test)
-        destino = "prueba" if args.for_set == "test" else "entrenamiento"
-        usada = "random" if args.for_set == "test" else args.strategy
-        print(f"== teach: {len(sug)} fotogramas sugeridos para {destino} (estrategia {usada}) ==")
-        for a in avisos:
-            print(f"  aviso: {a}")
-        for sg in sug:
-            print(f"  {sg.archivo}   t={sg.t_s:8.2f} s   {sg.motivo}")
-        return 0
-
-    for flag, which in ((args.add, "train"), (args.add_test, "test")):
-        if not flag:
-            continue
-        for item in flag:
-            archivo, sep, valor = item.partition("=")
-            if not sep or not valor:
-                raise ValueError(f"se espera ARCHIVO=VALOR, recibi {item!r}")
-            if not (frames_dir / archivo).exists():
-                raise FileNotFoundError(f"No existe el fotograma {frames_dir / archivo}")
-            valor = T.parse_value(valor, cfg.digits)  # falla con el formato esperado
-            ya_entreno = which == "test" and any(x.archivo == archivo for x in train)
-            ya_prueba = which == "train" and any(x.archivo == archivo for x in test)
-            train, test = assign(train, test, T.Sample(archivo, valor), which)
-            if ya_entreno:
-                print(f"  aviso: {archivo} estaba en entrenamiento y ya aporto glifos a la biblioteca; "
-                      "para una prueba limpia usa 'Reemplazar biblioteca' (teach --build)")
-            if ya_prueba:
-                print(f"  aviso: {archivo} estaba en la prueba y paso a entrenamiento")
-        T.save_truth(args.truth, train)
-        T.save_truth(args.test, test)
-        print(f"{len(train)} muestras de entrenamiento en {args.truth}; "
-              f"{len(test)} de prueba en {args.test}")
-    samples = train
-
-    if args.eval:
-        if not test:
-            raise ValueError(f"No hay muestras de prueba en {args.test}. Arma el conjunto con: "
-                             "teach --suggest 20 --for test, y cargalo con --add-test")
-        library = load(args.templates_dir)
-        rep = evaluate_test(test, cfg, frames_dir, offsets, library, train, args.gap)
-        print("== teach --eval ==")
-        for line in format_test_report(rep):
-            print("  " + line)
-        write_test_report(rep, args.test_report)
-        append_history(args.history, rep)
-        print(f"  informe: {args.test_report}   historial: {args.history}")
-        return 0
-
-    if args.build or args.check:
-        if not samples:
-            raise ValueError(f"No hay muestras en {args.truth}. Usa teach --add o la UI.")
-        ctx.train = samples
-        res = T.train([ctx], args.templates_dir, build=args.build, keep=args.keep,
-                      max_per_label=args.max_per_label, prefixed=False)
-        for e in res.errores:
-            print(f"  muestra descartada: {e}")
-        if not res.datas:
-            raise ValueError("Ninguna muestra se pudo procesar.")
-        print("== teach ==")
-        print("  cobertura: " + "  ".join(f"{k}:{v}" for k, v in res.coverage.items()))
-        if res.faltan:
-            print(f"  aviso: faltan ejemplos de {', '.join(res.faltan)}; esos caracteres no se van a leer")
-        if res.nuevas is not None:
-            print(f"  {sum(res.nuevas.values())} plantillas escritas en {args.templates_dir}  "
-                  f"({', '.join(f'{k}:{v}' for k, v in sorted(res.nuevas.items()))})")
-        if res.aviso_signo:
-            print("  " + res.aviso_signo.replace("\n", "\n  "))
-        for line in T.format_report(res.loo, "leave-one-out (sin las plantillas de la propia muestra)"):
-            print("  " + line)
-        T.write_report(res.loo, args.teach_report)
-        if res.vigente is None:
-            print("  no hay biblioteca vigente todavia")
-        else:
-            for line in T.format_report(res.vigente, "biblioteca vigente"):
-                print("  " + line)
-        solapadas = leakage(train, test, args.gap)
-        if solapadas:
-            print(f"  aviso: {len(solapadas)} fotogramas de prueba estan a menos de {args.gap:g} s "
-                  "de uno de entrenamiento")
-        print(f"  informe: {args.teach_report}")
-        return 0
-
-    if args.add or args.add_test:
-        return 0
-
-    motivos: dict[str, str] = {}
-    if args.queue:
-        sug, avisos = _teach_suggestions(args, cfg, items, train, test)
-        for a in avisos:
-            print(f"aviso: {a}")
-        if not sug:
-            raise ValueError("No hay fotogramas que sugerir (todo esta etiquetado o excluido).")
-        names = [sg.archivo for sg in sug]
-        motivos = {sg.archivo: sg.motivo for sg in sug}
-    from .teach_ui import run_teach_ui
-
-    return run_teach_ui(cfg, args, names, offsets, train, test=test, motivos=motivos,
-                        target=args.for_set)
 
 
 def cmd_qc(args: argparse.Namespace) -> int:
@@ -871,60 +616,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "como nueva referencia compartida"))
     c.set_defaults(func=cmd_calibrate)
 
-    # -- teach
-    th = subcomando("teach", help="Calibra el lector con valores reales escritos a mano",
-                        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    th.add_argument("--frames-dir", default=None, help="Carpeta de fotogramas")
-    th.add_argument("--qc-report", default=None, help="Reporte de QC (offsets de camara)")
-    th.add_argument("--truth", default=None, help="CSV de muestras archivo,valor")
-    th.add_argument("--templates-dir", default=None,
-                    help="Biblioteca de plantillas (default: calib/templates, compartida)")
-    th.add_argument("--teach-report", default=None, help="CSV con el informe de validacion")
-    th.add_argument("--readings", default=None,
-                    help="CSV de lecturas de `read` (la incertidumbre sale de ahi)")
-    th.add_argument("--test", default=None, help="CSV del conjunto de prueba archivo,valor")
-    th.add_argument("--test-report", default=None, help="CSV con el informe de la prueba")
-    th.add_argument("--history", default=None,
-                    help="CSV con una fila por evaluacion: la curva de aprendizaje")
-    th.add_argument("--suggest", type=int, default=0, metavar="N",
-                    help="Imprimir N fotogramas para etiquetar, segun --strategy")
-    th.add_argument("--strategy", choices=["mixed", "uncertain", "random", "uniform"],
-                    default="mixed",
-                    help="Como elegir los fotogramas: mixed = mitad incertidumbre, mitad azar")
-    th.add_argument("--for", dest="for_set", choices=["train", "test"], default="train",
-                    help="Para que conjunto se sugiere; la prueba siempre es al azar")
-    th.add_argument("--seed", type=int, default=0, help="Semilla del muestreo al azar")
-    th.add_argument("--gap", type=float, default=5.0, metavar="SEGUNDOS",
-                    help="Separacion minima entre fotogramas elegidos, y entre prueba y entrenamiento")
-    th.add_argument("--queue", type=int, default=0, metavar="N",
-                    help="Abrir la UI solo con los N fotogramas sugeridos")
-    th.add_argument("--add-test", nargs="+", metavar="ARCHIVO=VALOR",
-                    help="Agregar muestras al conjunto de prueba (nunca entran a la biblioteca)")
-    th.add_argument("--eval", action="store_true",
-                    help="Evaluar la biblioteca vigente sobre el conjunto de prueba")
-    th.add_argument("--all-runs", action="store_true",
-                    help=("Con --build o --check: usar las muestras de entrenamiento de TODAS las "
-                          "corridas, cada una con su propia config, en una sola biblioteca"))
-    th.add_argument("--exclude-runs", nargs="+", metavar="CORRIDA",
-                    help="Con --all-runs: corridas que no se usan para entrenar (hold-out por video)")
-    th.add_argument("--eval-all", action="store_true",
-                    help="Evaluar la biblioteca sobre la prueba de todas las corridas que la tengan")
-    th.add_argument("--add", nargs="+", metavar="ARCHIVO=VALOR",
-                    help="Agregar muestras sin ventana, ej. t_0001352.000.jpg=-0.018")
-    th.add_argument("--build", action="store_true",
-                    help="Construir calib/templates desde las muestras y validar")
-    th.add_argument("--check", action="store_true",
-                    help="Solo validar (leave-one-out) y escribir el informe")
-    th.add_argument("--keep", action="store_true",
-                    help="Con --build, sumar a las plantillas existentes (sin duplicar) "
-                         "en vez de reemplazarlas")
-    th.add_argument("--library", action="store_true",
-                    help="Listar las plantillas de la biblioteca por caracter")
-    th.add_argument("--delete", nargs="+", metavar="NOMBRE",
-                    help="Borrar plantillas por nombre, ej. 0_3 5_1")
-    th.add_argument("--max-per-label", type=int, default=DEFAULT_MAX_PER_LABEL,
-                    help="Maximo de variantes de plantilla por caracter")
-    th.set_defaults(func=cmd_teach)
+    # -- teach (areas y verbos: ver teach_cli.py)
+    teach_cli.register(sub, layout)
 
     # -- qc
     q = subcomando("qc", help="Filtro de calidad sobre la ROI",
@@ -991,6 +684,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Margen de busqueda del ancla en calibrate --auto")
     b.add_argument("--min-score", type=float, default=0.6,
                    help="NCC minima del ancla en calibrate --auto")
+    for flag, ayuda in (
+        ("--min-exactitud", "Veredicto: exactitud minima sobre test.csv (fraccion, ej. 0.95)"),
+        ("--max-error", "Veredicto: error maximo entre las lecturas aceptadas de test.csv (fraccion)"),
+        ("--min-cobertura", "Veredicto: cobertura minima, ok / fotogramas extraidos (fraccion)"),
+    ):
+        b.add_argument(flag, type=float, default=None,
+                       help=f"{ayuda}. Sin valor se usa 'acceptance' de calib/config.json; "
+                            "sin umbrales el veredicto queda vacio")
     b.set_defaults(func=cmd_batch, needs_paths=False)
 
     return p
@@ -998,6 +699,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
+    legacy = teach_cli.legacy_error(sys.argv[1:] if argv is None else argv)
+    if legacy:
+        print(f"ERROR: {legacy}", file=sys.stderr)
+        return 2
     args = parser.parse_args(argv)
     try:
         error = resolve_paths(args)

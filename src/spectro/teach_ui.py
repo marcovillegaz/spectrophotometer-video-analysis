@@ -588,7 +588,9 @@ def run_teach_ui(
             return
         rep = evaluate_test(h["test"], cfg, frames_dir, offsets, lib, h["samples"], args.gap)
         write_test_report(rep, args.test_report)
-        append_history(args.history, rep)
+        from .library import fingerprint
+
+        append_history(args.history, rep, huella=fingerprint(args.templates_dir))
         h["result"] = summary_lines(rep)
 
     def library_request(kind: str, st: TeachState) -> TeachState:
