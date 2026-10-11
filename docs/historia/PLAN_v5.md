@@ -1,3 +1,8 @@
+> **Plan cerrado.** Se implementó en la Fase 2 del plan v5 (commits `e7a2f66..361707d`,
+> 2026-10-10) y se movió de la raíz a `docs/historia/` en la Fase 5 (2026-10-11). Los comandos
+> `teach --…` que cita son la sintaxis **anterior**, la que este plan reemplazó; la vigente está en
+> la referencia de `teach` del `README.md`. El seguimiento del plan v5 está en `PLAN_CONTINUACION.md`.
+
 # Plan: comandos de `teach` por área (biblioteca global, entrenamiento, muestras y pruebas)
 
 ## Contexto

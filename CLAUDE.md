@@ -5,44 +5,42 @@ El lector es un clasificador de vecino más cercano (1-NN): compara cada celda d
 **biblioteca de plantillas** con correlación cruzada normalizada (NCC). No hay OCR ni red neuronal.
 
 ```
-video → extract → qc → read → report → absorbancia.csv
+video → extract → qc → read → report → absorbance.csv
                        ↑
         teach (etiquetar, entrenar la biblioteca y medirla)
 ```
 
 ## Comandos
 
-- **Tests:** `.venv/Scripts/python -m pytest -q` (~3 s, sin videos reales, fixtures sintéticas).
-- **CLI:** `.venv/Scripts/python -m spectro --help` y `... teach --help`. El paquete está instalado en modo editable.
-- **Documentación de usuario:** `README.md` (uso), `docs/GUIA_CALIBRACION.md` (proceso y fundamentos),
-  `docs/ARQUITECTURA.md` (decisiones), `docs/CONFIG.md` (campos de `config.json`).
-- **Planes:** `PLAN_v*.md` en la raíz. `PLAN_v5.md` reestructura `teach` por áreas (todavía no implementado).
+- **Tests:** `.venv/Scripts/python -m pytest -q` (~30 s, sin videos reales, fixtures sintéticas).
+- **CLI:** `.venv/Scripts/python -m spectro --help` y `... teach --help` (el árbol de `teach` y su tabla de migración). El paquete está instalado en modo editable.
+- **Estado de los datos (solo lectura):** `teach status`, `teach lib list --usage`, `teach samples list`, `teach test list`.
 
-## Dónde vive cada dato
+## Documentos (cada tema vive en uno solo)
 
-| qué | dónde | alcance |
-|---|---|---|
-| biblioteca de plantillas | `calib/templates/` | **global**, compartida por todos los videos |
-| receta de referencia | `calib/config.json`, `calib/reference.jpg` | global; solo siembra corridas nuevas y sirve a `calibrate --auto` |
-| config de una corrida (ROI, rotación, celdas, umbrales) | `runs/<id>/config.json` | por corrida; **es la que usa `read`** |
-| muestras de entrenamiento | `runs/<id>/truth.csv` | por corrida |
-| muestras de prueba | `runs/<id>/test.csv` | por corrida; **nunca entran a la biblioteca** |
-| fotogramas | `runs/<id>/frames/` | por corrida, regenerables (no listarlos: son miles) |
-
-`read` toma de `calib/` **solo** `templates/`; todo lo demás sale de `runs/<id>/config.json`.
+- [README.md](README.md): instalación, [carpetas y dónde vive cada dato](README.md#estructura-de-carpetas), [comandos y flags](README.md#referencia-de-comandos), [formatos de salida](README.md#formato-de-salida).
+- [docs/GUIA_CALIBRACION.md](docs/GUIA_CALIBRACION.md): el proceso de calibración por rondas y sus fundamentos.
+- [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md): módulos, contratos y decisiones de diseño.
+- [docs/CONFIG.md](docs/CONFIG.md): cada campo de `config.json`, incluido `acceptance`.
+- Planes: `PLAN_CONTINUACION.md` (el vigente) en la raíz; los cerrados y la auditoría de partida, en `docs/historia/`.
 
 ## Invariantes de diseño (no romperlos)
 
 - **Descartar antes que adivinar.** Una lectura dudosa se descarta y deja un hueco; no se interpola ni se inventa.
-- **Todo recorte de celda usa el corrimiento de cámara que midió `qc`**, igual que `read`. Si no, la biblioteca no coincide con lo que se lee.
+- **`read` toma de `calib/` solo `templates/`**; todo lo demás sale de `runs/<id>/config.json`. `calib/config.json` solo siembra corridas, sirve a `calibrate --auto` y guarda `acceptance`.
+- **Todo recorte de celda usa el corrimiento de cámara que midió `qc`**, igual que `read`. Si no, la biblioteca no coincide con lo que se lee. El recorte vive en `imaging.cell_glyphs`.
 - **La rotación se aplica en un solo lugar:** `imaging.load_frame`. La binarización y el recorte también viven en `imaging.py`.
-- **Las UI tienen la lógica pura** (estado, acciones, layout, vista previa) y el loop de OpenCV delgado, para poder testearla sin ventana.
+- **Un solo evaluador:** leave-one-out, biblioteca vigente y prueba pasan por `evaluation.evaluate`.
+- **La biblioteca se toca solo por `library.py`** (cargar, escribir, borrar, re-etiquetar, respaldar, huella).
+- **Las UI tienen la lógica pura** (estado, acciones, layout, vista previa) y el loop de OpenCV delgado, para poder testearla sin ventana. En `teach`, la lógica vive en `teach_session.py`; lo común a las dos ventanas, en `ui_common.py`.
 - **Las muestras de varias corridas se identifican como `corrida/archivo`**: los videos repiten nombres de fotograma.
 - **La prueba nunca entra a la biblioteca**, y una etiqueta equivocada contamina a todos los videos (la biblioteca es compartida).
+- **El id de la corrida nunca se adivina:** las etapas exigen `--run`; `teach` lo recibe como argumento posicional y rechaza `--run`.
+- **Los archivos que ya existen siguen cargando.** Los nombres viejos (en español) se traducen en un solo lugar, `compat.py`; los escritores emiten siempre los nuevos.
 
 ## Convenciones
 
-- Comentarios, docstrings, mensajes y documentos **en español**. Voseo en la documentación (`corré`, `mirá`).
+- **Nombres de interfaz en inglés** (identificadores, columnas de CSV, claves de `config.json`, flags, valores de estado); la prosa (comentarios, docstrings, mensajes, documentos) **en español**. Voseo en la documentación (`corré`, `mirá`). Los textos de pantalla (encabezados de tablas del CLI, etiquetas de la UI) quedan en español.
 - **Sin tildes ni eñes en el código ni en las salidas del CLI**; con tildes en los `.md`.
 - Las convenciones de `src/` y `tests/` están en `.claude/rules/` y se cargan al tocar esos archivos.
 - Errores esperados: `ValueError`, `FileNotFoundError` o `RuntimeError`; `cli.main` los imprime como `ERROR: ...` con código 1.
@@ -51,7 +49,7 @@ video → extract → qc → read → report → absorbancia.csv
 
 - **No se edita a mano** `calib/templates/`, `runs/**/truth.csv` ni `runs/**/test.csv` (hay reglas que lo bloquean). Los cambios van por los comandos `teach`.
 - Las pruebas que **escriben** se hacen sobre una copia: `--calib-dir <carpeta temporal>` o archivos en el directorio temporal de la sesión.
-- Antes de una operación destructiva sobre datos reales, respaldo (`old_data/` o `calib/.backups/`).
+- Antes de una operación destructiva sobre datos reales, respaldo (`old_data/` o `calib/.backups/`). Los comandos de `teach` que borran respaldan solos (los últimos 5; `teach lib restore` vuelve atrás).
 - Verificar sobre datos reales (solo lectura o copias), no solo con fixtures: varios errores se vieron solo así.
 - **Nada de `git commit`, `git push` ni `git reset --hard`** sin que el usuario lo pida; los commits se hacen con `/commit`.
 

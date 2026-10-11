@@ -1,3 +1,8 @@
+> **Documento histórico.** Auditoría de partida del plan v5, del 2026-10-10. Se movió de `docs/` a
+> `docs/historia/` en la Fase 5 (2026-10-11). Describe el proyecto **antes** del plan: los comandos,
+> módulos y cifras que cita (por ejemplo `templates.py` o `cmd_teach`) ya no existen o cambiaron. El
+> estado vigente está en el `README.md` y en `docs/`.
+
 # Auditoría previa al upgrade (insumo para `PLAN_v5.md`)
 
 Fecha: 2026-10-10 · Rama `main` (`aea57e4`, con mucho trabajo sin commitear) · Suite: **386 tests en verde (4.5 s)**
