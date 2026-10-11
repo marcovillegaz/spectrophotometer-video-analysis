@@ -31,7 +31,7 @@ def proyecto(tmp_path, library):
         t = float(i)
         nombre = f"t_{t:011.3f}.jpg"
         cv2.imwrite(str(frames_dir / nombre), render_display(texto))
-        rows.append(FrameRow(archivo=nombre, t_s=t, indice=i + 1))
+        rows.append(FrameRow(file=nombre, t_s=t, index=i + 1))
     index_path = tmp_path / "frames_index.csv"
     write_frames_index(rows, index_path)
 
@@ -41,7 +41,7 @@ def proyecto(tmp_path, library):
         cv2.imwrite(str(template_path(tpl.label, i, templates_dir)), tpl.image)
 
     cfg = make_config()
-    cfg.qc.reference_frame = rows[0].archivo
+    cfg.qc.reference_frame = rows[0].file
     cfg_path = tmp_path / "config.json"
     cfg.save(cfg_path)
     return {
@@ -73,7 +73,7 @@ def test_config_faltante_da_mensaje_util(tmp_path):
 
 
 def test_indice_de_fotogramas_ida_y_vuelta(tmp_path):
-    rows = [FrameRow(archivo="t_0000001.000.jpg", t_s=1.0, indice=1)]
+    rows = [FrameRow(file="t_0000001.000.jpg", t_s=1.0, index=1)]
     path = write_frames_index(rows, tmp_path / "idx.csv")
     assert load_frames_index(path) == rows
 
@@ -85,7 +85,7 @@ def test_pipeline_completo(proyecto):
            auto_thresholds=False, verbose=False)
     readings = run_read(cfg, proyecto["frames_dir"], qc_path, proyecto["templates"],
                         proyecto["out"] / "readings.csv", verbose=False)
-    assert [r.valor for r in readings] == pytest.approx(
+    assert [r.value for r in readings] == pytest.approx(
         [float(v) for v in proyecto["valores"]]
     )
 
@@ -93,9 +93,9 @@ def test_pipeline_completo(proyecto):
                    proyecto["out"], no_plots=True, verbose=False)
     assert n == len(proyecto["valores"])
 
-    with (proyecto["out"] / "absorbancia.csv").open(encoding="utf-8") as fh:
+    with (proyecto["out"] / "absorbance.csv").open(encoding="utf-8") as fh:
         filas = list(csv.DictReader(fh))
-    assert [f["absorbancia"] for f in filas] == proyecto["valores"]
+    assert [f["absorbance"] for f in filas] == proyecto["valores"]
     assert filas[1]["t_video"] == "00:00:01.000"
 
 
@@ -110,7 +110,7 @@ def test_cuadre_de_conteos(proyecto):
     n = run_report(cfg, proyecto["out"] / "readings.csv", qc_path, proyecto["frames_dir"],
                    proyecto["out"], no_plots=True, verbose=False)
     qc_rows = load_qc_report(qc_path)
-    descartadas = sum(1 for r in qc_rows if r.estado != "ok")
+    descartadas = sum(1 for r in qc_rows if r.status != "ok")
     assert n + descartadas == len(qc_rows)
 
 
@@ -124,7 +124,7 @@ def test_offset_de_tiempo_se_aplica(proyecto):
              proyecto["out"] / "readings.csv", verbose=False)
     run_report(cfg, proyecto["out"] / "readings.csv", qc_path, proyecto["frames_dir"],
                proyecto["out"], no_plots=True, verbose=False)
-    with (proyecto["out"] / "absorbancia.csv").open(encoding="utf-8") as fh:
+    with (proyecto["out"] / "absorbance.csv").open(encoding="utf-8") as fh:
         filas = list(csv.DictReader(fh))
     assert filas[0]["t_s"] == "0.000"
     assert filas[0]["t_exp"] == "100.000"
@@ -140,9 +140,9 @@ def test_hora_absoluta_agrega_columna(proyecto):
              proyecto["out"] / "readings.csv", verbose=False)
     run_report(cfg, proyecto["out"] / "readings.csv", qc_path, proyecto["frames_dir"],
                proyecto["out"], no_plots=True, verbose=False)
-    with (proyecto["out"] / "absorbancia.csv").open(encoding="utf-8") as fh:
+    with (proyecto["out"] / "absorbance.csv").open(encoding="utf-8") as fh:
         filas = list(csv.DictReader(fh))
-    assert filas[0]["hora"].startswith("2026-09-01T16:42:20")
+    assert filas[0]["datetime"].startswith("2026-09-01T16:42:20")
 
 
 def test_biblioteca_vacia_da_mensaje_util(tmp_path):
@@ -157,3 +157,33 @@ def test_roi_invalida_da_mensaje_util(library):
     cfg.roi = ROI(0, 0, 0, 0)
     with pytest.raises(ValueError, match="calibrate"):
         read_frame(render_display("0.245"), cfg, library)
+
+
+def _read_con_signo(tmp_path, biblioteca):
+    """``read`` con una config de 6 celdas (signo) sobre un fotograma positivo."""
+    cfg = make_config(sign=True)
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    cv2.imwrite(str(frames / "t_0000001.000.jpg"), render_display("0.245"))
+    write_frames_index([FrameRow("t_0000001.000.jpg", 1.0, 1)], tmp_path / "idx.csv")
+    tpl = tmp_path / "templates"
+    tpl.mkdir()
+    for i, t in enumerate(biblioteca):
+        cv2.imwrite(str(template_path(t.label, i, tpl)), t.image)
+    cfg.qc.reference_frame = "t_0000001.000.jpg"
+    run_qc(cfg, frames, tmp_path / "idx.csv", tmp_path / "qc.csv", auto_thresholds=False, verbose=False)
+    return run_read(cfg, frames, tmp_path / "qc.csv", tpl, tmp_path / "r.csv", verbose=False)
+
+
+def test_read_avisa_por_stderr_si_falta_el_menos_y_no_cambia_las_lecturas(tmp_path, library, capsys):
+    """Rompe: quitar el aviso de ``read`` (``warn_missing_sign``) o hacer que cambie el resultado."""
+    lecturas = _read_con_signo(tmp_path, [t for t in library if t.label != "-"])
+    err = capsys.readouterr().err
+    assert "plantilla '-'" in err and "teach train" in err
+    assert len(lecturas) == 1
+
+
+def test_read_no_avisa_si_la_biblioteca_trae_el_menos(tmp_path, library_sign, capsys):
+    """Rompe: avisar siempre, aun con la plantilla '-' presente."""
+    _read_con_signo(tmp_path, library_sign)
+    assert "plantilla '-'" not in capsys.readouterr().err

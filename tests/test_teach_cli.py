@@ -20,7 +20,7 @@ from spectro import teach as T
 from spectro.cli import main
 from spectro.config import AcceptanceConfig, Config
 from spectro.qc import QCRow, write_qc_report
-from spectro.teach_cli import AREAS, MIGRACION, legacy_error
+from spectro.teach_cli import AREAS, MIGRATION, legacy_error
 
 TRAIN = ["-0.123", " 4.567", "-8.901", " 2.345", " 6.789", "-0.246", " 1.357", " 9.048"]
 TEST = [" 3.456", "-7.890"]
@@ -90,8 +90,8 @@ def instantanea(raiz):
 ])
 def test_legacy_error_devuelve_la_tabla_de_migracion_para_la_sintaxis_vieja(argv):
     """Rompe: que `teach --flag` siga pareciendo valido (o que el prefijo global confunda al detector)."""
-    assert legacy_error(argv) == MIGRACION
-    assert "teach train ID" in MIGRACION and "teach test eval" in MIGRACION
+    assert legacy_error(argv) == MIGRATION
+    assert "teach train ID" in MIGRATION and "teach test eval" in MIGRATION
 
 
 @pytest.mark.parametrize("argv", [
@@ -113,8 +113,8 @@ def test_legacy_error_no_toca_lo_que_no_es_la_sintaxis_vieja(argv):
 
 def test_la_tabla_de_migracion_nombra_todas_las_areas_y_no_usa_tildes():
     for area in AREAS:
-        assert area in MIGRACION
-    assert all(ord(c) < 128 for c in MIGRACION)
+        assert area in MIGRATION
+    assert all(ord(c) < 128 for c in MIGRATION)
 
 
 def test_main_rechaza_la_sintaxis_vieja_con_codigo_2_y_sin_escribir_nada(p, capsys):
@@ -222,7 +222,7 @@ def test_status_con_muestras_y_sin_biblioteca_sugiere_entrenar(p, capsys):
     assert "0 plantillas" in salida and "la biblioteca esta vacia: python -m spectro teach train" in salida
     fila = next(x for x in salida.splitlines() if x.strip().startswith("r1"))
     assert fila.split()[1:3] == ["8", "2"]          # entrenamiento, prueba
-    assert "sin_lectura" in fila
+    assert "no_reading" in fila
 
 
 def test_status_no_escribe_nada(p):
@@ -262,14 +262,14 @@ def test_status_avisa_la_falta_del_menos_y_propone_etiquetar_negativos(tmp_path,
 
 def test_status_cuenta_roi_fuera_en_la_tabla_de_descartes(p, capsys):
     """Rompe: dejar roi_fuera fuera de la tabla de motivos de descarte de status."""
-    write_qc_report([QCRow(_nombre(0), 0.0, 1), QCRow(_nombre(10), 10.0, 2, estado="roi_fuera"),
-                     QCRow(_nombre(20), 20.0, 3, estado="roi_fuera")], p["run"] / "out" / "qc_report.csv")
+    write_qc_report([QCRow(_nombre(0), 0.0, 1), QCRow(_nombre(10), 10.0, 2, status="roi_outside"),
+                     QCRow(_nombre(20), 20.0, 3, status="roi_outside")], p["run"] / "out" / "qc_report.csv")
     assert teach(p, "status") == 0
     salida = capsys.readouterr().out
-    cab = next(x for x in salida.splitlines() if x.split()[-1:] == ["roi_fuera"])
+    cab = next(x for x in salida.splitlines() if x.split()[-1:] == ["roi_outside"])
     fila = salida.splitlines()[salida.splitlines().index(cab) + 1].split()
     columnas = cab.split()
-    assert fila[0] == "r1" and fila[columnas.index("roi_fuera")] == "2"
+    assert fila[0] == "r1" and fila[columnas.index("roi_outside")] == "2"
 
 
 def test_status_de_una_corrida_sin_qc_lo_dice(p, capsys):
@@ -281,11 +281,11 @@ def test_status_marca_las_salidas_desactualizadas_y_propone_releer(p, capsys):
     entrenar(p)
     out = p["run"] / "out"
     (out / "readings.csv").write_text("archivo\n", encoding="utf-8")
-    (out / "read_meta.json").write_text('{"huella": "000000000000"}', encoding="utf-8")
+    (out / "read_meta.json").write_text('{"fingerprint": "000000000000"}', encoding="utf-8")
     capsys.readouterr()
     assert teach(p, "status") == 0
     salida = capsys.readouterr().out
-    assert "desactualizadas" in salida
+    assert "stale" in salida
     assert "las salidas de r1 son anteriores a la biblioteca" in salida and "read --run r1" in salida
 
 
@@ -299,7 +299,7 @@ def test_status_con_salidas_al_dia_no_pide_releer(p, capsys):
     capsys.readouterr()
     assert teach(p, "status") == 0
     salida = capsys.readouterr().out
-    assert "al_dia" in salida and "son anteriores a la biblioteca" not in salida
+    assert "up_to_date" in salida and "son anteriores a la biblioteca" not in salida
 
 
 def test_status_pide_evaluar_la_prueba_y_deja_de_pedirlo_tras_evaluar(p, capsys):
@@ -607,23 +607,23 @@ def test_train_no_usa_las_pruebas(p, monkeypatch):
     original = T.build_pool
 
     def espia(samples, *a, **k):
-        vistos.extend(s.archivo for s in samples)
+        vistos.extend(s.file for s in samples)
         return original(samples, *a, **k)
 
     monkeypatch.setattr(T, "build_pool", espia)
     entrenar(p)
-    probadas = {s.archivo for s in T.load_truth(p["run"] / "test.csv")}
+    probadas = {s.file for s in T.load_truth(p["run"] / "test.csv")}
     assert vistos and not probadas & set(vistos)
 
 
 # ==========================================================================
 # samples / test: list, add, remove, suggest, label
 # ==========================================================================
-@pytest.mark.parametrize("area, archivo, n", [("samples", "truth.csv", 8), ("test", "test.csv", 2)])
-def test_list_de_una_corrida_muestra_cada_muestra_y_su_cobertura(p, capsys, area, archivo, n):
+@pytest.mark.parametrize("area, file, n", [("samples", "truth.csv", 8), ("test", "test.csv", 2)])
+def test_list_de_una_corrida_muestra_cada_muestra_y_su_cobertura(p, capsys, area, file, n):
     assert teach(p, area, "list", "r1") == 0
     salida = capsys.readouterr().out
-    assert f"{n} muestras de" in salida and archivo in salida
+    assert f"{n} muestras de" in salida and file in salida
     assert sum(1 for x in salida.splitlines() if x.strip().startswith("t_")) == n
     assert "cobertura:" in salida and "no hay plantillas todavia" in salida
 
@@ -668,14 +668,14 @@ def test_samples_add_agrega_y_es_idempotente(p):
     assert teach(p, "samples", "add", "r1", f"{nuevo}=-3.333") == 0
     assert teach(p, "samples", "add", "r1", f"{nuevo}=-3.333") == 0
     muestras = T.load_truth(p["run"] / "truth.csv")
-    assert len(muestras) == 9 and sum(1 for s in muestras if s.archivo == nuevo) == 1
+    assert len(muestras) == 9 and sum(1 for s in muestras if s.file == nuevo) == 1
 
 
 def test_samples_add_acepta_coma_decimal_y_normaliza(p):
     nuevo = _nombre(500)
     cv2.imwrite(str(p["run"] / "frames" / nuevo), render_display(" 3.333"))
     assert teach(p, "samples", "add", "r1", f"{nuevo}=3,333") == 0
-    assert {s.archivo: s.valor for s in T.load_truth(p["run"] / "truth.csv")}[nuevo] == "3.333"
+    assert {s.file: s.value for s in T.load_truth(p["run"] / "truth.csv")}[nuevo] == "3.333"
 
 
 @pytest.mark.parametrize("valor, mensaje", [
@@ -712,7 +712,7 @@ def test_test_add_no_toca_truth_csv(p):
     antes = (p["run"] / "truth.csv").read_bytes()
     assert teach(p, "test", "add", "r1", f"{nuevo}=-3.333") == 0
     assert (p["run"] / "truth.csv").read_bytes() == antes
-    assert nuevo in {s.archivo for s in T.load_truth(p["run"] / "test.csv")}
+    assert nuevo in {s.file for s in T.load_truth(p["run"] / "test.csv")}
 
 
 def test_samples_add_de_un_fotograma_de_prueba_lo_pasa_a_entrenamiento_con_aviso(p, capsys):
@@ -720,8 +720,8 @@ def test_samples_add_de_un_fotograma_de_prueba_lo_pasa_a_entrenamiento_con_aviso
     capsys.readouterr()
     assert teach(p, "samples", "add", "r1", f"{archivo}=3.456") == 0
     assert "estaba en la prueba y paso a entrenamiento" in capsys.readouterr().out
-    assert archivo in {s.archivo for s in T.load_truth(p["run"] / "truth.csv")}
-    assert archivo not in {s.archivo for s in T.load_truth(p["run"] / "test.csv")}
+    assert archivo in {s.file for s in T.load_truth(p["run"] / "truth.csv")}
+    assert archivo not in {s.file for s in T.load_truth(p["run"] / "test.csv")}
 
 
 def test_un_fotograma_nunca_queda_en_los_dos_conjuntos(p):
@@ -729,8 +729,8 @@ def test_un_fotograma_nunca_queda_en_los_dos_conjuntos(p):
     a = _nombre(0)
     for area in ("test", "samples", "test", "samples"):
         assert teach(p, area, "add", "r1", f"{a}=-0.123") == 0
-        tr = {s.archivo for s in T.load_truth(p["run"] / "truth.csv")}
-        te = {s.archivo for s in T.load_truth(p["run"] / "test.csv")}
+        tr = {s.file for s in T.load_truth(p["run"] / "truth.csv")}
+        te = {s.file for s in T.load_truth(p["run"] / "test.csv")}
         assert not tr & te
 
 
@@ -790,7 +790,7 @@ def test_samples_suggest_no_repite_lo_ya_etiquetado(p, capsys):
         cv2.imwrite(str(p["run"] / "frames" / _nombre(1000 + i * 10)), render_display(" 1.111"))
     assert teach(p, "samples", "suggest", "r1", "5", "--gap", "0") == 0
     nombres = _sugeridos(capsys.readouterr().out)
-    etiquetados = {s.archivo for s in T.load_truth(p["run"] / "truth.csv") + T.load_truth(p["run"] / "test.csv")}
+    etiquetados = {s.file for s in T.load_truth(p["run"] / "truth.csv") + T.load_truth(p["run"] / "test.csv")}
     assert len(nombres) == 5 and not set(nombres) & etiquetados
 
 
@@ -841,9 +841,9 @@ def ui_espia(monkeypatch):
     """Reemplaza el loop de OpenCV: guarda con que se lo llamo y no abre ninguna ventana."""
     llamadas = []
 
-    def falsa(cfg, args, names, offsets, truth, test=None, motivos=None, target="train"):
+    def falsa(cfg, args, names, offsets, truth, test=None, reasons=None, target="train"):
         llamadas.append({"cfg": cfg, "args": args, "names": list(names), "truth": truth,
-                         "test": test, "motivos": motivos, "target": target})
+                         "test": test, "reasons": reasons, "target": target})
         return 0
 
     monkeypatch.setattr("spectro.teach_ui.run_teach_ui", falsa)
@@ -870,7 +870,7 @@ def test_label_con_queue_pasa_solo_los_sugeridos_con_su_motivo(p, ui_espia):
         cv2.imwrite(str(p["run"] / "frames" / _nombre(1000 + i * 10)), render_display(" 1.111"))
     assert teach(p, "samples", "label", "r1", "--queue", "3", "--gap", "0") == 0
     (ll,) = ui_espia
-    assert len(ll["names"]) == 3 and set(ll["motivos"]) == set(ll["names"])
+    assert len(ll["names"]) == 3 and set(ll["reasons"]) == set(ll["names"])
     etiquetados = {_nombre(i * 10) for i in range(8)} | {_nombre(100), _nombre(110)}
     assert not set(ll["names"]) & etiquetados
 
@@ -905,7 +905,7 @@ def test_test_history_lista_una_fila_por_evaluacion_con_el_cambio(p, capsys):
     capsys.readouterr()
     assert teach(p, "test", "history", "r1") == 0
     salida = capsys.readouterr().out
-    filas = [x for x in salida.splitlines() if "misma_corrida" in x]
+    filas = [x for x in salida.splitlines() if "same_run" in x]
     assert len(filas) == 2
     assert "100.0%" in filas[0] and "+0.0 pt" in filas[1] and "pt" not in filas[0]
 
@@ -975,26 +975,26 @@ def test_test_eval_usa_los_umbrales_de_calib_config_y_el_flag_les_gana(p, capsys
     entrenar(p)
     con_lectura(p)
     cfg = Config.default()
-    cfg.acceptance = AcceptanceConfig(min_exactitud=0.5)
+    cfg.acceptance = AcceptanceConfig(min_accuracy=0.5)
     cfg.save(p["calib"] / "config.json")
     capsys.readouterr()
     assert teach(p, "test", "eval") == 0
-    assert "acepta" in capsys.readouterr().out
-    assert teach(p, "test", "eval", "--min-exactitud", "1.0") == 0
-    assert "acepta" in capsys.readouterr().out                    # 100%: justo en el umbral
-    assert teach(p, "test", "eval", "--min-cobertura", "1.0") == 0
-    assert "acepta" in capsys.readouterr().out                    # cobertura 4/4, tambien justo
-    cfg.acceptance = AcceptanceConfig(min_exactitud=0.5, max_error=0.0)
+    assert "accept" in capsys.readouterr().out
+    assert teach(p, "test", "eval", "--min-accuracy", "1.0") == 0
+    assert "accept" in capsys.readouterr().out                    # 100%: justo en el umbral
+    assert teach(p, "test", "eval", "--min-coverage", "1.0") == 0
+    assert "accept" in capsys.readouterr().out                    # cobertura 4/4, tambien justo
+    cfg.acceptance = AcceptanceConfig(min_accuracy=0.5, max_error=0.0)
     cfg.save(p["calib"] / "config.json")
     assert teach(p, "test", "eval", "--max-error", "0.5") == 0
-    assert "acepta" in capsys.readouterr().out
+    assert "accept" in capsys.readouterr().out
 
 
 def test_test_eval_sin_readings_manda_a_revisar_aunque_haya_umbral(p, capsys):
     entrenar(p)
     capsys.readouterr()
-    assert teach(p, "test", "eval", "--min-exactitud", "0.5") == 0
-    assert "revisar (la corrida no tiene readings.csv)" in capsys.readouterr().out
+    assert teach(p, "test", "eval", "--min-accuracy", "0.5") == 0
+    assert "review (la corrida no tiene readings.csv)" in capsys.readouterr().out
 
 
 def test_test_eval_sin_umbrales_deja_el_veredicto_vacio(p, capsys):
@@ -1002,7 +1002,7 @@ def test_test_eval_sin_umbrales_deja_el_veredicto_vacio(p, capsys):
     capsys.readouterr()
     assert teach(p, "test", "eval") == 0
     salida = capsys.readouterr().out
-    assert "acepta" not in salida and "revisar" not in salida
+    assert "accept" not in salida and "review" not in salida
 
 
 def test_test_eval_con_un_umbral_inalcanzable_manda_a_revisar(p, capsys):
@@ -1010,12 +1010,12 @@ def test_test_eval_con_un_umbral_inalcanzable_manda_a_revisar(p, capsys):
     # una pregunta de la prueba que el lector no puede acertar: se cambia el valor esperado
     T.save_truth(p["run"] / "test.csv", [T.Sample(_nombre(100), "3.457"), T.Sample(_nombre(110), "-7.891")])
     capsys.readouterr()
-    assert teach(p, "test", "eval", "--min-exactitud", "0.9") == 0
+    assert teach(p, "test", "eval", "--min-accuracy", "0.9") == 0
     salida = capsys.readouterr().out
-    assert "revisar" in salida and "exactitud 0.0% < 90.0%" in salida
+    assert "review" in salida and "exactitud 0.0% < 90.0%" in salida
 
 
-@pytest.mark.parametrize("flag", ["--min-exactitud", "--max-error", "--min-cobertura"])
+@pytest.mark.parametrize("flag", ["--min-accuracy", "--max-error", "--min-coverage"])
 def test_test_eval_con_umbral_fuera_de_rango_falla(p, capsys, flag):
     entrenar(p)
     capsys.readouterr()
@@ -1048,9 +1048,9 @@ def test_los_valores_por_defecto_del_parser():
     assert a.runs == [] and a.exclude is None and a.keep is False and a.gap == 5.0
     assert a.max_per_label == 3
     s = build_parser().parse_args(["teach", "samples", "suggest", "r1"])
-    assert (s.n, s.strategy, s.seed, s.gap, s.which) == (20, "mixed", 0, 5.0, "train")
+    assert (s.n, s.strategy, s.seed, s.gap, s.which) == (20, "mixed", None, 5.0, "train")
     e = build_parser().parse_args(["teach", "test", "eval"])
-    assert (e.min_exactitud, e.max_error, e.min_cobertura) == (None, None, None)
+    assert (e.min_accuracy, e.max_error, e.min_coverage) == (None, None, None)
 
 
 def test_las_flags_de_modo_ya_no_existen_en_ningun_verbo():
@@ -1062,8 +1062,63 @@ def test_las_flags_de_modo_ya_no_existen_en_ningun_verbo():
             parser.parse_args(["teach", "train", "r1", flag])
 
 
-def test_templates_ya_no_es_un_comando():
-    from spectro.cli import build_parser
+# ==========================================================================
+# Fase 4: templates ya no es comando, --roi-only, historial viejo
+# ==========================================================================
+def test_templates_ya_no_es_un_comando(p, capsys):
+    """Rompe: reinstalar el subcomando ``templates`` (lo reemplazo ``teach train``)."""
+    with pytest.raises(SystemExit) as exc:
+        main(p["glob"] + ["templates", "--run", "r1"])
+    assert exc.value.code == 2
+    assert "templates" in capsys.readouterr().err
+    assert not p["lib"].exists()
 
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["templates"])
+
+def _recortar(run):
+    """Convierte los fotogramas de la corrida en recortes de la ROI + sidecar (como ``extract --roi-only``)."""
+    import json
+
+    cfg = Config.load(run / "config.json")
+    for f in (run / "frames").glob("*.jpg"):
+        cv2.imwrite(str(f), cfg.roi.crop(cv2.imread(str(f), cv2.IMREAD_GRAYSCALE)))
+    (run / "frames" / ".roi.json").write_text(json.dumps(vars(cfg.roi)), encoding="utf-8")
+
+
+def test_train_y_test_eval_funcionan_con_una_corrida_roi_only_completa(p, capsys):
+    """Rompe: que ``train`` o ``eval`` ignoren el sidecar ``.roi.json`` (recortarian de nuevo
+    un fotograma que ya es la ROI y fallarian por ``roi_outside``)."""
+    _recortar(p["run"])
+    entrenar(p)
+    assert len(pngs(p)) > 0
+    capsys.readouterr()
+    assert teach(p, "test", "eval", "r1") == 0
+    salida = capsys.readouterr().out
+    assert "ERROR" not in salida
+    fila = next(x for x in salida.splitlines() if x.strip().startswith("r1"))
+    assert "100.0%" in fila
+    assert (p["run"] / "out" / "test_report.csv").exists()
+
+
+def test_test_eval_migra_un_historial_viejo_y_conserva_sus_filas(p, capsys):
+    """Rompe: que ``eval`` agregue una fila con el encabezado nuevo debajo de uno viejo en espanol
+    (o que pierda las filas anteriores)."""
+    out = p["run"] / "out"
+    out.mkdir()
+    hist = out / "teach_history.csv"
+    hist.write_text(
+        "fecha,tipo,plantillas,entrenamiento,prueba,valores_distintos,correctas,erroneas,"
+        "descartadas,exactitud,error_aceptadas,cobertura\n"
+        "2026-01-01 10:00:00,misma_corrida,30,8,2,2,2,0,0,1.0000,0.0000,1.0000\n",
+        encoding="utf-8")
+    entrenar(p)
+    assert teach(p, "test", "eval", "r1") == 0
+    with hist.open(encoding="utf-8", newline="") as fh:
+        filas = list(csv.DictReader(fh))
+    assert list(filas[0]) == [
+        "date", "kind", "templates", "training", "test", "distinct_values", "correct", "wrong",
+        "discarded", "accuracy", "accepted_error", "coverage", "fingerprint"]
+    assert len(filas) == 2
+    assert filas[0]["date"] == "2026-01-01 10:00:00" and filas[0]["correct"] == "2"
+    assert filas[0]["fingerprint"] == "" and filas[1]["fingerprint"] != ""
+    capsys.readouterr()
+    assert teach(p, "test", "history", "r1") == 0

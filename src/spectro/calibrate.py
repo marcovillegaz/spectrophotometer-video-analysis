@@ -117,9 +117,9 @@ def refine_roi(
 
 def _calib_paths(args: argparse.Namespace) -> CalibPaths:
     """La calib de esta invocacion. ``cli.resolve_paths`` ya la dejo resuelta."""
-    resuelta = getattr(args, "calib_paths", None)
-    if resuelta is not None:
-        return resuelta
+    resolved = getattr(args, "calib_paths", None)
+    if resolved is not None:
+        return resolved
     return CalibPaths.at(getattr(args, "calib_dir", None) or CALIB_DIR)
 
 
@@ -205,14 +205,14 @@ def auto_calibrate(args: argparse.Namespace) -> int:
             f"fotograma. El numero quedo fuera de cuadro; calibra a mano."
         )
         return 2
-    nuevo_anchor = _shift_or_none(anchor, dx, dy, w, h) or anchor
+    new_anchor = _shift_or_none(anchor, dx, dy, w, h) or anchor
 
     cfg = Config.load_or_default(args.config)
     cfg.roi = roi
     cfg.rotation_deg = ref_cfg.rotation_deg
     cfg.digits = ref_cfg.digits
     cfg.templates = ref_cfg.templates
-    cfg.qc.anchor = nuevo_anchor
+    cfg.qc.anchor = new_anchor
     cfg.qc.min_anchor_ncc = ref_cfg.qc.min_anchor_ncc
     cfg.qc.max_shift_px = ref_cfg.qc.max_shift_px
     cfg.qc.register = ref_cfg.qc.register
@@ -220,11 +220,11 @@ def auto_calibrate(args: argparse.Namespace) -> int:
     # contra el que qc registra los demas de la corrida.
     cfg.qc.reference_frame = frame_path.name
     cfg.save(args.config)
-    print(f"  ROI {roi.as_tuple()}, ancla {nuevo_anchor.as_tuple()}")
+    print(f"  ROI {roi.as_tuple()}, ancla {new_anchor.as_tuple()}")
     print(f"  guardado en {args.config}")
 
     _write_overlay(
-        args, rotate(load_color(frame_path), cfg.rotation_deg), roi, cfg.digits, nuevo_anchor
+        args, rotate(load_color(frame_path), cfg.rotation_deg), roi, cfg.digits, new_anchor
     )
     if getattr(args, "promote", False):
         _promote(calib, cfg, frame_path)
@@ -268,10 +268,10 @@ def _promote(calib: CalibPaths, cfg: Config, frame_path: Path) -> None:
     from .project import calib_recipe
 
     calib.root.mkdir(parents=True, exist_ok=True)
-    receta = calib_recipe(cfg)
+    recipe = calib_recipe(cfg)
     if calib.config.exists():  # el criterio de aceptacion es de la calib: promover no lo pisa
-        receta.acceptance = Config.load(calib.config).acceptance
-    receta.save(calib.config)
+        recipe.acceptance = Config.load(calib.config).acceptance
+    recipe.save(calib.config)
     shutil.copyfile(frame_path, calib.reference)
     print(
         f"  --promote: {calib.config} y {calib.reference} actualizados "

@@ -27,7 +27,7 @@ def test_evaluate_usa_el_sidecar_roi(cfg, library, tmp_path):
     _, datas, errores = build_pool([Sample("t_0000001.000.jpg", "0.245")], cfg, tmp_path)
     assert not errores and datas[0].frames_roi == r
     lectura = evaluate(datas, library, cfg)[0].reading
-    assert lectura.caracteres == "0.245" and lectura.estado == "ok"
+    assert lectura.chars == "0.245" and lectura.status == "ok"
 
 
 def test_guarda_de_roi_solo_salta_si_no_cabe(cfg):
@@ -48,11 +48,11 @@ def test_qc_y_read_descartan_un_fotograma_que_no_cabe(cfg, library, tmp_path):
     cv2.imwrite(str(frames / "t_0000002.000.jpg"), np.full((10, 10), 90, np.uint8))
     qc_csv = tmp_path / "qc.csv"
     rows = run_qc(cfg, frames, tmp_path / "no_hay.csv", qc_csv, verbose=False)
-    assert {r.archivo: r.estado for r in rows}["t_0000002.000.jpg"] == "roi_fuera"
-    assert rows[0].estado != "roi_fuera"
+    assert {r.file: r.status for r in rows}["t_0000002.000.jpg"] == "roi_outside"
+    assert rows[0].status != "roi_outside"
     # Aun si un fotograma chico llegara marcado como ok, read lo descarta sin abortar.
     for r in rows:
-        r.estado = "ok"
+        r.status = "ok"
     from spectro.qc import write_qc_report
     write_qc_report(rows, qc_csv)
     tdir = tmp_path / "tpl"
@@ -60,7 +60,7 @@ def test_qc_y_read_descartan_un_fotograma_que_no_cabe(cfg, library, tmp_path):
     for t in library:
         cv2.imwrite(str(tdir / f"{t.label}_0.png"), t.image)
     lecturas = run_read(cfg, frames, qc_csv, tdir, tmp_path / "r.csv", verbose=False)
-    assert {r.archivo: r.estado for r in lecturas}["t_0000002.000.jpg"] == "roi_fuera"
+    assert {r.file: r.status for r in lecturas}["t_0000002.000.jpg"] == "roi_outside"
 
 
 def test_list_backups_orden_natural(tmp_path):
@@ -88,7 +88,7 @@ def test_train_avisa_signo_si_alguna_corrida_lo_necesita(monkeypatch, tmp_path):
                         lambda c, v: "falta '-'" if c.digits.sign_slot is not None else None)
     corridas = [SimpleNamespace(cfg=sin), SimpleNamespace(cfg=con)]
     res = teach.train(corridas, tmp_path, build=False)
-    assert res.aviso_signo == "falta '-'"
+    assert res.sign_warning == "falta '-'"
 
 
 def test_read_importa_template():

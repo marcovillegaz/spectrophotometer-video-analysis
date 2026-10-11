@@ -21,8 +21,8 @@ Interfaz publica:
     dedup(pool, max_per_label)               -> list[Glyph]
     list_entries(directory)                  -> list[LibEntry]
     usage(entries, datas)                    -> None
-    delete(paths) / restore(trashed)         -> list[Trashed] / int
-    relabel(path, new_label, directory)      -> Path
+    delete(paths, backup=True) / restore(trashed) -> list[Trashed] / int
+    relabel(path, new_label, directory, backup=True) -> Path
     clear(directory)                         -> int
     backup(directory) -> Path | None / list_backups(directory) -> list[str]
     restore_backup(directory, name=None)     -> str
@@ -246,13 +246,13 @@ def write(
     for old in directory.glob("*.png"):
         old.unlink()
     counts: dict[str, int] = {}
-    nuevas: dict[str, int] = {}
+    added: dict[str, int] = {}
     for g in dedup(pool, max_per_label):
         n = counts.get(g.label, 0)
         cv2.imwrite(str(template_path(g.label, n, directory)), g.image)
         counts[g.label] = n + 1
-        nuevas[g.label] = nuevas.get(g.label, 0) + 1
-    return nuevas
+        added[g.label] = added.get(g.label, 0) + 1
+    return added
 
 
 def add(pool: list[Glyph], directory: Path | str, max_per_label: int = DEFAULT_MAX_PER_LABEL) -> AddResult:
@@ -273,33 +273,34 @@ def add(pool: list[Glyph], directory: Path | str, max_per_label: int = DEFAULT_M
         lab = label_from_filename(p)
         have.setdefault(lab, []).append(img)
         next_n[lab] = max(next_n.get(lab, 0), template_index(p) + 1)
-    nuevas: dict[str, int] = {}
+    added: dict[str, int] = {}
     skipped = 0
     for g in dedup(pool, max_per_label):
-        existentes = have.setdefault(g.label, [])
-        if len(existentes) >= max_per_label or any(
-            ncc(g.image, e) >= DEDUP_NCC for e in existentes
+        existing = have.setdefault(g.label, [])
+        if len(existing) >= max_per_label or any(
+            ncc(g.image, e) >= DEDUP_NCC for e in existing
         ):
             skipped += 1
             continue
         n = next_n.get(g.label, 0)
         cv2.imwrite(str(template_path(g.label, n, directory)), g.image)
         next_n[g.label] = n + 1
-        existentes.append(g.image)
-        nuevas[g.label] = nuevas.get(g.label, 0) + 1
-    return AddResult(nuevas, skipped)
+        existing.append(g.image)
+        added[g.label] = added.get(g.label, 0) + 1
+    return AddResult(added, skipped)
 
 
 # --------------------------------------------------------------------------
 # Borrar, deshacer, cambiar la etiqueta
 # --------------------------------------------------------------------------
-def delete(paths: list[Path]) -> list[Trashed]:
+def delete(paths: list[Path], backup: bool = True) -> list[Trashed]:
     """Borra los archivos y devuelve lo necesario para deshacer.
 
-    Antes respalda la biblioteca de la que salen (ver ``backup``).
+    Antes respalda la biblioteca de la que salen (ver ``backup``), salvo con
+    ``backup=False``: la UI toma un solo respaldo por sesion y lo reutiliza.
     """
-    if paths:
-        backup(Path(paths[0]).parent)
+    if paths and backup:
+        _backup_dir(Path(paths[0]).parent)
     out: list[Trashed] = []
     for p in paths:
         p = Path(p)
@@ -319,12 +320,16 @@ def restore(trashed: list[Trashed]) -> int:
     return n
 
 
-def relabel(path: Path | str, new_label: str, directory: Path | str) -> Path:
-    """Cambia la etiqueta de una plantilla: la renombra al proximo indice libre."""
+def relabel(path: Path | str, new_label: str, directory: Path | str, backup: bool = True) -> Path:
+    """Cambia la etiqueta de una plantilla: la renombra al proximo indice libre.
+
+    Respalda antes la biblioteca, salvo con ``backup=False`` (un respaldo por sesion de UI).
+    """
     if new_label not in ALL_CHARS:
         raise ValueError(f"etiqueta invalida {new_label!r}; usa uno de {''.join(ALL_CHARS)}")
     directory = Path(directory)
-    backup(directory)
+    if backup:
+        _backup_dir(directory)
     nxt = max(
         (template_index(p) + 1 for p in directory.glob("*.png") if label_from_filename(p) == new_label),
         default=0,
@@ -366,10 +371,10 @@ def backup(directory: Path | str, keep: int = KEEP_BACKUPS) -> Path | None:
     root = backups_root(directory)
     root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dest, k = root / stamp, 1
-    while dest.exists():  # dos respaldos en el mismo segundo
-        k += 1
-        dest = root / f"{stamp}_{k}"
+    # Dos respaldos en el mismo segundo: el sufijo es (maximo ya usado)+1, no el primero libre,
+    # porque la poda puede haber borrado el nombre base y reusarlo ordenaria como el mas viejo.
+    usados = [_backup_key(n)[1] for n in list_backups(directory) if _backup_key(n)[0] == stamp.replace("_", "")]
+    dest = root / stamp if not usados else root / f"{stamp}_{max(usados) + 1}"
     dest.mkdir()
     for f in files:
         shutil.copy2(f, dest / f.name)
@@ -379,11 +384,16 @@ def backup(directory: Path | str, keep: int = KEEP_BACKUPS) -> Path | None:
     return dest
 
 
+# Envoltorio de ``backup`` para ``delete`` y ``relabel``, cuyo parametro ``backup`` tapa la funcion.
+def _backup_dir(directory: Path | str) -> Path | None:
+    return backup(directory)
+
+
 def _backup_key(name: str) -> tuple[str, int]:
     """Orden natural: la fecha y despues el sufijo numerico (``_10`` va despues de ``_2``)."""
-    partes = name.split("_")
-    k = int(partes[2]) if len(partes) > 2 else 1
-    return (partes[0] + partes[1], k)
+    parts = name.split("_")
+    k = int(parts[2]) if len(parts) > 2 else 1
+    return (parts[0] + parts[1], k)
 
 
 def list_backups(directory: Path | str) -> list[str]:

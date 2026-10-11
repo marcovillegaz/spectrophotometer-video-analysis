@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-import pytest
-
 from conftest import render_display
 from spectro import teach as T
 from spectro.read import read_frame
+from spectro.teach_session import TeachState, apply_action, go_to, remove_sample
 from spectro.teach_ui import (
     HEIGHT,
     PANEL_W,
     VIEW_W,
-    TeachState,
     TeachView,
-    apply_action,
-    go_to,
     layout_teach,
-    remove_sample,
     render_teach,
 )
 from spectro.calib_ui import hit_test
@@ -75,9 +70,10 @@ def test_layout_botones():
     for i, a in enumerate(lay.buttons):
         for b in lay.buttons[i + 1:]:
             assert not (a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h)
-    # teclado numerico completo
+    # el teclado numerico en pantalla ya no existe: se tipea con el teclado fisico
     acciones = {b.action for b in lay.buttons}
-    assert {f"key:{c}" for c in "0123456789.-"} <= acciones
+    assert "clear" in acciones
+    assert not {a for a in acciones if a.startswith("key:")} and "back" not in acciones
 
 
 def test_render_smoke(cfg_sign, library_sign):

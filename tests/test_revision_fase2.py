@@ -17,7 +17,7 @@ from spectro.cli import main
 from spectro.evaluation import HISTORY_FIELDS, append_history, evaluate_test, load_history
 from spectro.project import CalibPaths, RunPaths
 from spectro.qc import QCRow, write_qc_report
-from spectro.read import DESACTUALIZADAS, Reading, outputs_state, write_readings
+from spectro.read import STALE, Reading, outputs_state, write_readings
 from spectro.report import batch_summary, load_run_input
 
 # fixtures y ayudas de los otros archivos de CLI
@@ -38,24 +38,24 @@ def _reporte(cfg_sign, library_sign, tmp_path):
 def test_append_history_guarda_la_huella(cfg_sign, library_sign, tmp_path):
     rep = _reporte(cfg_sign, library_sign, tmp_path)
     hist = tmp_path / "h.csv"
-    append_history(hist, rep, huella="abc123def456")
+    append_history(hist, rep, fingerprint="abc123def456")
     append_history(hist, rep)
-    assert [f["huella"] for f in load_history(hist)] == ["abc123def456", ""]
+    assert [f["fingerprint"] for f in load_history(hist)] == ["abc123def456", ""]
 
 
 def test_append_history_migra_un_historial_viejo_sin_perder_filas(cfg_sign, library_sign, tmp_path):
     """Rompe: agregar una fila de 13 columnas a un archivo de 12 (CSV torcido) o perder las filas viejas."""
     rep = _reporte(cfg_sign, library_sign, tmp_path)
-    viejas = [c for c in HISTORY_FIELDS if c != "huella"]
-    fila = ["2026-01-01 10:00:00", "otro_video", "12", "0", "5", "5", "4", "1", "0", "0.8000",
+    viejas = [c for c in HISTORY_FIELDS if c != "fingerprint"]
+    fila = ["2026-01-01 10:00:00", "other_video", "12", "0", "5", "5", "4", "1", "0", "0.8000",
             "0.2000", "1.0000"]
     hist = tmp_path / "viejo.csv"
     hist.write_text(",".join(viejas) + "\n" + ",".join(fila) + "\n" + ",".join(fila) + "\n", encoding="utf-8")
-    append_history(hist, rep, huella="h1")
+    append_history(hist, rep, fingerprint="h1")
     filas = load_history(hist)
     assert len(filas) == 3 and list(filas[0]) == HISTORY_FIELDS
-    assert [f["huella"] for f in filas] == ["", "", "h1"]
-    assert filas[0]["exactitud"] == "0.8000" and filas[1]["fecha"] == "2026-01-01 10:00:00"
+    assert [f["fingerprint"] for f in filas] == ["", "", "h1"]
+    assert filas[0]["accuracy"] == "0.8000" and filas[1]["date"] == "2026-01-01 10:00:00"
     with hist.open(encoding="utf-8") as fh:
         assert {len(r) for r in csv.reader(fh)} == {len(HISTORY_FIELDS)}
 
@@ -63,10 +63,10 @@ def test_append_history_migra_un_historial_viejo_sin_perder_filas(cfg_sign, libr
 def test_append_history_en_un_archivo_nuevo_escribe_la_cabecera_con_huella(cfg_sign, library_sign, tmp_path):
     rep = _reporte(cfg_sign, library_sign, tmp_path)
     hist = tmp_path / "n.csv"
-    append_history(hist, rep, huella="x")
-    append_history(hist, rep, huella="y")
+    append_history(hist, rep, fingerprint="x")
+    append_history(hist, rep, fingerprint="y")
     assert hist.read_text(encoding="utf-8").splitlines()[0].split(",") == HISTORY_FIELDS
-    assert [f["huella"] for f in load_history(hist)] == ["x", "y"]
+    assert [f["fingerprint"] for f in load_history(hist)] == ["x", "y"]
 
 
 # ==========================================================================
@@ -86,7 +86,7 @@ def test_test_eval_guarda_la_huella_de_la_biblioteca_en_el_historial(p):
     """Rompe: que eval no pase la huella a append_history (la columna quedaria vacia)."""
     entrenar(p)
     teach(p, "test", "eval", "r1")
-    assert _ultima_fila(p)["huella"] == L.fingerprint(p["lib"]) != ""
+    assert _ultima_fila(p)["fingerprint"] == L.fingerprint(p["lib"]) != ""
 
 
 def test_status_juzga_la_evaluacion_por_la_huella_no_por_la_fecha(p, capsys):
@@ -114,8 +114,8 @@ def test_status_con_un_historial_viejo_sin_huella_se_juzga_por_fecha(p, capsys):
     _fechar_biblioteca(p, -7200)
     hist = p["run"] / "out" / "teach_history.csv"
     hist.parent.mkdir(parents=True, exist_ok=True)
-    viejas = [c for c in HISTORY_FIELDS if c != "huella"]
-    fila = [time.strftime("%Y-%m-%d %H:%M:%S"), "misma_corrida", "12", "8", "2", "2", "2", "0", "0",
+    viejas = [c for c in HISTORY_FIELDS if c != "fingerprint"]
+    fila = [time.strftime("%Y-%m-%d %H:%M:%S"), "same_run", "12", "8", "2", "2", "2", "0", "0",
             "1.0000", "0.0000", "1.0000"]
     hist.write_text(",".join(viejas) + "\n" + ",".join(fila) + "\n", encoding="utf-8")
     capsys.readouterr()
@@ -142,7 +142,7 @@ def test_lib_restore_deja_las_plantillas_con_fecha_nueva(p):
     assert teach(p, "lib", "restore") == 0
     restauradas = [f.stat().st_mtime for f in p["lib"].glob("*.png")]
     assert restauradas and min(restauradas) > time.time() - 120
-    assert outputs_state(out / "readings.csv", p["lib"]) == DESACTUALIZADAS
+    assert outputs_state(out / "readings.csv", p["lib"]) == STALE
 
 
 @pytest.mark.parametrize("verbo", [["lib", "delete", "0_0"], ["lib", "relabel", "0_0", "5"]])
@@ -179,30 +179,30 @@ def test_qc_re_corrido_sin_read_no_infla_las_lecturas_ok(tmp_path):
     """Rompe: contar `ok` desde la columna estado de qc_report.csv (si se re-corrio qc, no dice nada de read)."""
     run = RunPaths.for_run("x", runs_dir=tmp_path / "runs", calib_dir=tmp_path / "calib")
     estados = ["ok", "ok", "ok", "ok", "dark"]
-    write_qc_report([QCRow(f"t_{i}.jpg", float(i), i + 1, estado=e) for i, e in enumerate(estados)],
+    write_qc_report([QCRow(f"t_{i}.jpg", float(i), i + 1, status=e) for i, e in enumerate(estados)],
                     run.qc_report)
     write_readings([Reading("t_0.jpg", 0.0, 1, 0.1, 0.9, "0.100"),
-                    Reading("t_1.jpg", 1.0, 2, estado="low_confidence")], run.readings)
-    entrada = load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], evaluar=False)
-    assert entrada.estados == ["ok", "low_confidence", "sin_leer", "sin_leer", "dark"]
+                    Reading("t_1.jpg", 1.0, 2, status="low_confidence")], run.readings)
+    entrada = load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], with_eval=False)
+    assert entrada.statuses == ["ok", "low_confidence", "not_read", "not_read", "dark"]
     (fila,) = batch_summary([entrada])
     assert (fila.ok, fila.low_confidence, fila.qc["dark"]) == (1, 1, 1)
-    assert fila.cobertura == pytest.approx(1 / 5)
+    assert fila.coverage == pytest.approx(1 / 5)
 
 
 def test_los_descartes_de_qc_se_cuentan_aunque_no_haya_lectura(tmp_path):
     run = RunPaths.for_run("x", runs_dir=tmp_path / "runs", calib_dir=tmp_path / "calib")
-    write_qc_report([QCRow("a.jpg", 0.0, 1, estado="roi_fuera"), QCRow("b.jpg", 1.0, 2, estado="blur")],
+    write_qc_report([QCRow("a.jpg", 0.0, 1, status="roi_outside"), QCRow("b.jpg", 1.0, 2, status="blur")],
                     run.qc_report)
     write_readings([], run.readings)
-    (fila,) = batch_summary([load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], evaluar=False)])
-    assert (fila.qc["roi_fuera"], fila.qc["blur"], fila.ok) == (1, 1, 0)
+    (fila,) = batch_summary([load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], with_eval=False)])
+    assert (fila.qc["roi_outside"], fila.qc["blur"], fila.ok) == (1, 1, 0)
 
 
 # ==========================================================================
 # batch: umbrales validados antes de procesar
 # ==========================================================================
-@pytest.mark.parametrize("flag", ["--min-exactitud", "--max-error", "--min-cobertura"])
+@pytest.mark.parametrize("flag", ["--min-accuracy", "--max-error", "--min-coverage"])
 def test_batch_valida_los_umbrales_antes_de_tocar_ningun_video(lote, monkeypatch, capsys, flag):  # noqa: F811
     """Rompe: validar al final (un flag mal tipeado costaria todo el lote)."""
     llamadas = []
@@ -214,9 +214,9 @@ def test_batch_valida_los_umbrales_antes_de_tocar_ningun_video(lote, monkeypatch
 
 
 def test_batch_con_umbral_malo_y_sin_videos_falla_por_el_umbral(lote, capsys):  # noqa: F811
-    assert main(lote["glob"] + ["batch", "nada*.mov", "--min-cobertura", "2"]) == 1
-    assert "--min-cobertura" in capsys.readouterr().err
+    assert main(lote["glob"] + ["batch", "nada*.mov", "--min-coverage", "2"]) == 1
+    assert "--min-coverage" in capsys.readouterr().err
 
 
 def test_batch_con_umbrales_validos_y_sin_videos_sigue_devolviendo_2(lote):  # noqa: F811
-    assert main(lote["glob"] + ["batch", "nada*.mov", "--min-cobertura", "0.5"]) == 2
+    assert main(lote["glob"] + ["batch", "nada*.mov", "--min-coverage", "0.5"]) == 2

@@ -21,10 +21,10 @@ from spectro.extract import FrameRow, write_frames_index
 from spectro.project import require_run
 from spectro.qc import run_qc
 from spectro.read import (
-    AL_DIA,
-    DESACTUALIZADAS,
-    SIN_HUELLA,
-    SIN_LECTURA,
+    UP_TO_DATE,
+    STALE,
+    NO_FINGERPRINT,
+    NO_READING,
     load_read_meta,
     outputs_state,
     run_read,
@@ -111,8 +111,8 @@ def test_write_read_meta_guarda_huella_fecha_y_cantidad(tmp_path):
     d = _plantillas(tmp_path / "t")
     ruta = write_read_meta(tmp_path / "out" / "read_meta.json", d, 3)
     meta = load_read_meta(ruta)
-    assert meta["huella"] == L.fingerprint(d) and meta["plantillas"] == 3
-    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", meta["fecha"])
+    assert meta["fingerprint"] == L.fingerprint(d) and meta["templates"] == 3
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", meta["date"])
 
 
 @pytest.mark.parametrize("contenido", [None, "esto no es json", "[1, 2, 3]", ""])
@@ -125,7 +125,7 @@ def test_load_read_meta_tolera_ausente_corrupto_o_que_no_es_un_objeto(tmp_path, 
 
 def test_outputs_state_sin_lecturas(tmp_path):
     d = _plantillas(tmp_path / "t")
-    assert outputs_state(tmp_path / "out" / "readings.csv", d) == SIN_LECTURA
+    assert outputs_state(tmp_path / "out" / "readings.csv", d) == NO_READING
 
 
 def test_outputs_state_al_dia_y_desactualizadas_segun_la_huella(tmp_path):
@@ -135,12 +135,12 @@ def test_outputs_state_al_dia_y_desactualizadas_segun_la_huella(tmp_path):
     lecturas.parent.mkdir()
     lecturas.write_text("archivo\n", encoding="utf-8")
     write_read_meta(lecturas.with_name("read_meta.json"), d, 3)
-    assert outputs_state(lecturas, d) == AL_DIA
+    assert outputs_state(lecturas, d) == UP_TO_DATE
     # tocar la fecha sin cambiar los bytes no invalida: manda la huella
     (d / "0_0.png").write_bytes((d / "0_0.png").read_bytes())
-    assert outputs_state(lecturas, d) == AL_DIA
+    assert outputs_state(lecturas, d) == UP_TO_DATE
     cv2.imwrite(str(d / "2_0.png"), np.full((20, 12), 9, np.uint8))
-    assert outputs_state(lecturas, d) == DESACTUALIZADAS
+    assert outputs_state(lecturas, d) == STALE
 
 
 def test_outputs_state_con_biblioteca_vacia_y_huella_vacia_esta_al_dia(tmp_path):
@@ -149,7 +149,7 @@ def test_outputs_state_con_biblioteca_vacia_y_huella_vacia_esta_al_dia(tmp_path)
     lecturas.parent.mkdir()
     lecturas.write_text("archivo\n", encoding="utf-8")
     write_read_meta(lecturas.with_name("read_meta.json"), tmp_path / "t", 0)
-    assert outputs_state(lecturas, tmp_path / "t") == AL_DIA
+    assert outputs_state(lecturas, tmp_path / "t") == UP_TO_DATE
 
 
 def test_outputs_state_sin_meta_se_juzga_por_fecha(tmp_path):
@@ -161,10 +161,10 @@ def test_outputs_state_sin_meta_se_juzga_por_fecha(tmp_path):
     for f in d.glob("*.png"):
         _envejecer(f, 7200)
     _envejecer(lecturas, 3600)
-    assert outputs_state(lecturas, d) == SIN_HUELLA          # plantillas mas viejas: no se sabe
+    assert outputs_state(lecturas, d) == NO_FINGERPRINT          # plantillas mas viejas: no se sabe
     nueva = d / "7_0.png"
     cv2.imwrite(str(nueva), np.full((20, 12), 5, np.uint8))
-    assert outputs_state(lecturas, d) == DESACTUALIZADAS     # una plantilla mas nueva que la lectura
+    assert outputs_state(lecturas, d) == STALE     # una plantilla mas nueva que la lectura
 
 
 def test_outputs_state_con_meta_corrupto_cae_en_la_fecha(tmp_path):
@@ -176,7 +176,7 @@ def test_outputs_state_con_meta_corrupto_cae_en_la_fecha(tmp_path):
     for f in d.glob("*.png"):
         _envejecer(f, 7200)
     _envejecer(lecturas, 3600)
-    assert outputs_state(lecturas, d) == SIN_HUELLA
+    assert outputs_state(lecturas, d) == NO_FINGERPRINT
 
 
 # ==========================================================================
@@ -196,7 +196,7 @@ def _leer(tmp_path, cfg, library, nombre="r"):
     tpl.mkdir()
     for i, t in enumerate(library):
         cv2.imwrite(str(L.template_path(t.label, i, tpl)), t.image)
-    cfg.qc.reference_frame = rows[0].archivo
+    cfg.qc.reference_frame = rows[0].file
     run_qc(cfg, frames, base / "idx.csv", base / "out" / "qc.csv", auto_thresholds=False, verbose=False)
     lecturas = run_read(cfg, frames, base / "out" / "qc.csv", tpl, base / "out" / "readings.csv",
                         verbose=False)
@@ -208,32 +208,32 @@ def test_run_read_escribe_read_meta_junto_a_readings(cfg, library, tmp_path):
     base, tpl, _ = _leer(tmp_path, cfg, library)
     meta = load_read_meta(base / "out" / "read_meta.json")
     assert meta is not None
-    assert meta["huella"] == L.fingerprint(tpl) and meta["huella"] != ""
-    assert meta["plantillas"] == len(library)
-    assert outputs_state(base / "out" / "readings.csv", tpl) == AL_DIA
+    assert meta["fingerprint"] == L.fingerprint(tpl) and meta["fingerprint"] != ""
+    assert meta["templates"] == len(library)
+    assert outputs_state(base / "out" / "readings.csv", tpl) == UP_TO_DATE
 
 
 def test_run_read_no_cambia_el_formato_de_readings_csv(cfg, library, tmp_path):
     base, _, _ = _leer(tmp_path, cfg, library)
     cabecera = (base / "out" / "readings.csv").read_text(encoding="utf-8").splitlines()[0]
-    assert "huella" not in cabecera and cabecera.startswith("archivo,t_s,indice,valor")
+    assert "fingerprint" not in cabecera and cabecera.startswith("file,t_s,index,value")
 
 
 def test_cambiar_la_biblioteca_despues_de_leer_deja_las_salidas_desactualizadas(cfg, library, tmp_path):
     base, tpl, _ = _leer(tmp_path, cfg, library)
     L.delete([next(tpl.glob("*.png"))])
-    assert outputs_state(base / "out" / "readings.csv", tpl) == DESACTUALIZADAS
+    assert outputs_state(base / "out" / "readings.csv", tpl) == STALE
 
 
 def test_releer_actualiza_la_huella(cfg, library, tmp_path):
     base, tpl, _ = _leer(tmp_path, cfg, library)
-    antes = load_read_meta(base / "out" / "read_meta.json")["huella"]
+    antes = load_read_meta(base / "out" / "read_meta.json")["fingerprint"]
     L.delete([next(tpl.glob("*.png"))])
     run_read(cfg, base / "frames", base / "out" / "qc.csv", tpl, base / "out" / "readings.csv",
              verbose=False)
     meta = load_read_meta(base / "out" / "read_meta.json")
-    assert meta["huella"] != antes and meta["huella"] == L.fingerprint(tpl)
-    assert outputs_state(base / "out" / "readings.csv", tpl) == AL_DIA
+    assert meta["fingerprint"] != antes and meta["fingerprint"] == L.fingerprint(tpl)
+    assert outputs_state(base / "out" / "readings.csv", tpl) == UP_TO_DATE
 
 
 def test_read_sin_biblioteca_falla_y_no_deja_read_meta(cfg, tmp_path):

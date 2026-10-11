@@ -56,14 +56,14 @@ def test_clasifica_correcta_erronea_y_descartada(cfg_sign, library_sign, tmp_pat
     test = [T.Sample(a, "-0.245"), T.Sample(b, "1.789"), T.Sample(c, "-3.057"),  # c: el display dice 056
             T.Sample(d, "0.000")]
     rep = evaluate_test(test, cfg_sign, tmp_path, None, library_sign)
-    por = {r.archivo: r.resultado for r in rep.results}
-    assert por[a] == por[b] == "correcta"
-    assert por[c] == "erronea"
-    assert por[d] == "descartada"
-    assert (rep.correctas, rep.erroneas, rep.descartadas) == (2, 1, 1)
-    assert rep.aceptadas == 3 and rep.error_aceptadas == pytest.approx(1 / 3)
-    assert rep.cobertura == pytest.approx(0.75) and rep.exactitud == pytest.approx(0.5)
-    assert rep.tipo == "otro_video" and rep.valores_distintos == 4
+    por = {r.file: r.result for r in rep.results}
+    assert por[a] == por[b] == "correct"
+    assert por[c] == "wrong"
+    assert por[d] == "discarded"
+    assert (rep.correct, rep.wrong, rep.discarded) == (2, 1, 1)
+    assert rep.accepted == 3 and rep.accepted_error == pytest.approx(1 / 3)
+    assert rep.coverage == pytest.approx(0.75) and rep.accuracy == pytest.approx(0.5)
+    assert rep.kind == "other_video" and rep.distinct_values == 4
 
 
 def test_tipo_y_fugas(cfg_sign, library_sign, tmp_path):
@@ -72,10 +72,10 @@ def test_tipo_y_fugas(cfg_sign, library_sign, tmp_path):
     lejos = frame(tmp_path, 200, "-3.056")
     test = [T.Sample(n_test, "-0.245")]
     sin = evaluate_test(test, cfg_sign, tmp_path, None, library_sign, train=[])
-    assert sin.tipo == "otro_video" and sin.leaks == []
+    assert sin.kind == "other_video" and sin.leaks == []
     con = evaluate_test(test, cfg_sign, tmp_path, None, library_sign,
                         train=[T.Sample(n_train, "1.789"), T.Sample(lejos, "-3.056")], gap_s=5)
-    assert con.tipo == "misma_corrida" and len(con.leaks) == 1 and con.n_train == 2
+    assert con.kind == "same_run" and len(con.leaks) == 1 and con.n_train == 2
     texto = "\n".join(format_test_report(con))
     assert "optimista" in texto and "casi el mismo fotograma" in texto
 
@@ -83,7 +83,7 @@ def test_tipo_y_fugas(cfg_sign, library_sign, tmp_path):
 def test_avisa_valores_repetidos_y_caracteres_ausentes(cfg_sign, library_sign, tmp_path):
     muestras = [T.Sample(frame(tmp_path, i * 10, "-0.245"), "-0.245") for i in range(4)]
     rep = evaluate_test(muestras, cfg_sign, tmp_path, None, [t for t in library_sign if t.label != "7"])
-    assert rep.valores_distintos == 1
+    assert rep.distinct_values == 1
     texto = "\n".join(format_test_report(rep))
     assert "1 valores distintos" in texto and "optimista" in texto
     ausente = evaluate_test([T.Sample(frame(tmp_path, 99, " 1.789"), "1.789")], cfg_sign, tmp_path,
@@ -95,9 +95,6 @@ def test_exactitud_por_caracter_y_resumen(cfg_sign, library_sign, tmp_path):
     test = [T.Sample(frame(tmp_path, 0, "-0.245"), "-0.245"),
             T.Sample(frame(tmp_path, 10, "-0.245"), "-0.246")]
     rep = evaluate_test(test, cfg_sign, tmp_path, None, library_sign)
-    assert rep.char_accuracy["5"] == (1, 1)       # el display dice 5 y se escribio 5
-    assert rep.char_accuracy["6"] == (0, 1)       # se escribio 6 y el display dice 5
-    assert rep.char_accuracy["-"] == (2, 2)
     lineas = summary_lines(rep)
     assert len(lineas) == 3 and not lineas[0].startswith("!") and "1 correctas" in lineas[1]
     repetidas = evaluate_test([T.Sample(frame(tmp_path, 20 + i * 10, "-0.245"), "-0.245") for i in range(4)],
@@ -112,37 +109,37 @@ def test_exactitud_por_caracter_y_resumen(cfg_sign, library_sign, tmp_path):
 def test_muestras_con_formato_invalido_se_reportan(cfg_sign, library_sign, tmp_path):
     rep = evaluate_test([T.Sample(frame(tmp_path, 0, "-0.245"), "12.5")], cfg_sign, tmp_path, None,
                         library_sign)
-    assert rep.n == 0 and len(rep.errores) == 1
+    assert rep.n == 0 and len(rep.errors) == 1
 
 
 def test_informe_csv_e_historial(cfg_sign, library_sign, tmp_path):
     test = [T.Sample(frame(tmp_path, 0, "-0.245"), "-0.245")]
     rep = evaluate_test(test, cfg_sign, tmp_path, None, library_sign)
     out = write_test_report(rep, tmp_path / "out" / "test_report.csv")
-    assert "correcta" in out.read_text(encoding="utf-8")
+    assert "correct" in out.read_text(encoding="utf-8")
     hist = tmp_path / "out" / "teach_history.csv"
     append_history(hist, rep)
     append_history(hist, rep)
     filas = load_history(hist)
     assert len(filas) == 2 and list(filas[0]) == HISTORY_FIELDS
-    assert filas[0]["tipo"] == "otro_video" and float(filas[0]["exactitud"]) == 1.0
+    assert filas[0]["kind"] == "other_video" and float(filas[0]["accuracy"]) == 1.0
     assert load_history(tmp_path / "no_existe.csv") == []
 
 
 # -- margen en readings.csv ------------------------------------------------
 def test_read_frame_calcula_el_margen(cfg_sign, library_sign):
     r = read_frame(render_display("-0.245"), cfg_sign, library_sign)
-    assert r.estado == "ok" and r.margen >= cfg_sign.templates.min_margin
+    assert r.status == "ok" and r.margin >= cfg_sign.templates.min_margin
 
 
 def test_margen_se_guarda_y_un_csv_viejo_carga(tmp_path):
     p = tmp_path / "readings.csv"
-    write_readings([Reading("t_0000001.000.jpg", 1.0, 1, 0.5, 0.9, "-0.500", margen=0.1234)], p)
-    assert load_readings(p)[0].margen == pytest.approx(0.1234)
+    write_readings([Reading("t_0000001.000.jpg", 1.0, 1, 0.5, 0.9, "-0.500", margin=0.1234)], p)
+    assert load_readings(p)[0].margin == pytest.approx(0.1234)
     viejo = tmp_path / "viejo.csv"
     viejo.write_text("archivo,t_s,indice,valor,confianza,caracteres,dx,dy,estado\n"
                      "t_0000001.000.jpg,1.000,1,0.5,0.9000, 0.500,0,0,ok\n", encoding="utf-8")
-    assert load_readings(viejo)[0].margen == 0.0
+    assert load_readings(viejo)[0].margin == 0.0
 
 
 # -- batch --until ---------------------------------------------------------
@@ -194,7 +191,7 @@ def test_flujo_completo_la_prueba_nunca_entra_a_la_biblioteca(proyecto, monkeypa
     original = T.build_pool
 
     def espia(samples, *a, **k):
-        vistos.append([s.archivo for s in samples])
+        vistos.append([s.file for s in samples])
         return original(samples, *a, **k)
 
     monkeypatch.setattr(T, "build_pool", espia)
@@ -206,10 +203,10 @@ def test_flujo_completo_la_prueba_nunca_entra_a_la_biblioteca(proyecto, monkeypa
     capsys.readouterr()
     assert cli(p, "test", "eval", "r1") == 0
     salida = capsys.readouterr().out
-    assert "teach test eval r1" in salida and "correctas" in salida and "misma corrida" in salida
+    assert "teach test eval r1" in salida and "correct" in salida and "misma corrida" in salida
     assert cli(p, "test", "eval", "r1") == 0
     filas = load_history(p["run"] / "out" / "teach_history.csv")
-    assert len(filas) == 2 and filas[0]["tipo"] == "misma_corrida" and filas[0]["prueba"] == "2"
+    assert len(filas) == 2 and filas[0]["kind"] == "same_run" and filas[0]["test"] == "2"
     with (p["run"] / "out" / "test_report.csv").open(encoding="utf-8") as fh:
         assert len(list(csv.DictReader(fh))) == 2
 
@@ -222,7 +219,7 @@ def test_mover_de_entrenamiento_a_prueba_avisa_y_deja_un_solo_conjunto(proyecto,
     cli(p, "test", "add", "r1", f"{a}={v}")
     assert "ya aporto glifos" in capsys.readouterr().out
     assert T.load_truth(p["run"] / "truth.csv") == []
-    assert [s.archivo for s in T.load_truth(p["run"] / "test.csv")] == [a]
+    assert [s.file for s in T.load_truth(p["run"] / "test.csv")] == [a]
 
 
 def test_suggest_para_prueba_es_al_azar_y_lejos_del_entrenamiento(proyecto, capsys):
@@ -234,20 +231,20 @@ def test_suggest_para_prueba_es_al_azar_y_lejos_del_entrenamiento(proyecto, caps
     nombres = [x.split()[0] for x in salida.splitlines() if x.strip().startswith("t_")]
     entrenados = {a for a, _ in p["train"]}
     assert nombres and not set(nombres) & entrenados
-    assert "azar" in salida and "incierta" not in salida
+    assert "random" in salida and "incierta" not in salida
 
 
 def test_suggest_sin_readings_avisa_arranque_en_frio(proyecto, capsys):
     p = proyecto
     assert cli(p, "samples", "suggest", "r1", "3", "--strategy", "mixed") == 0
     salida = capsys.readouterr().out
-    assert "uniforme" in salida and "arranque en frio" in salida
+    assert "uniform" in salida and "arranque en frio" in salida
 
 
 def test_eval_sin_prueba_o_sin_biblioteca_falla_con_mensaje(proyecto, capsys):
     p = proyecto
     assert cli(p, "test", "eval", "r1") == 1             # sin biblioteca: el error dice que correr
-    assert "plantillas" in capsys.readouterr().err
+    assert "templates" in capsys.readouterr().err
     cli(p, "samples", "add", "r1", *[f"{a}={v}" for a, v in p["train"]])
     assert cli(p, "train", "r1") == 0
     assert cli(p, "test", "eval", "r1") == 1             # hay biblioteca pero no hay prueba

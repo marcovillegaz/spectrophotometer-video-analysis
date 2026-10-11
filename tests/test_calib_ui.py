@@ -97,7 +97,7 @@ def _estado_signo(refine: bool = False):
 def test_preview_lee_el_valor_con_el_lector_real(cfg_sign, library_sign):
     gray = render_display("-0.245")
     p = preview_reading(gray, _estado_signo(), "light_on_dark", library_sign)
-    assert p.enabled and p.valor == pytest.approx(-0.245) and p.estado == "ok"
+    assert p.enabled and p.value == pytest.approx(-0.245) and p.status == "ok"
     assert p.chars == "-0.245"
 
 

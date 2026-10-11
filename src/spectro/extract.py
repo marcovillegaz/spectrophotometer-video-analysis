@@ -2,7 +2,7 @@
 
 Produce ``runs/<id>/frames/t_0000001.000.jpg`` (segundos desde el inicio del video,
 7 digitos enteros y 3 decimales, de modo que el orden alfabetico sea el orden
-temporal) mas un indice ``runs/<id>/frames_index.csv`` con ``archivo,t_s,indice``.
+temporal) mas un indice ``runs/<id>/frames_index.csv`` con ``file,t_s,index``.
 
 La eleccion del binario de ffmpeg no esta cableada: :func:`resolve_ffmpeg`
 prefiere el del PATH del sistema y cae al de ``imageio-ffmpeg`` (dentro del
@@ -29,6 +29,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .compat import read_csv_rows
 from .config import ROI
 
 #: Defaults de ultima instancia de las funciones de este modulo, relativos a
@@ -280,12 +281,12 @@ def format_hhmmss(t_s: float) -> str:
 class FrameRow:
     """Una fila de ``frames_index.csv``."""
 
-    archivo: str
+    file: str
     t_s: float
-    indice: int
+    index: int
 
     def path(self, frames_dir: Path | str = FRAMES_DIR) -> Path:
-        return Path(frames_dir) / self.archivo
+        return Path(frames_dir) / self.file
 
 
 def extract_frames(
@@ -357,7 +358,7 @@ def extract_frames(
         t = frame_time(i, fps, start)
         final = output / frame_name(t)
         tmp.replace(final)
-        rows.append(FrameRow(archivo=final.name, t_s=round(t, 3), indice=i))
+        rows.append(FrameRow(file=final.name, t_s=round(t, 3), index=i))
 
     sidecar = output / ROI_SIDECAR
     if roi is not None and roi.is_valid():
@@ -373,14 +374,14 @@ def extract_frames(
 
 
 def write_frames_index(rows: list[FrameRow], path: Path | str = FRAMES_INDEX) -> Path:
-    """Escribe el indice ``archivo,t_s,indice`` que consumen las etapas siguientes."""
+    """Escribe el indice ``file,t_s,index`` que consumen las etapas siguientes."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["archivo", "t_s", "indice"])
+        writer.writerow(["file", "t_s", "index"])
         for r in rows:
-            writer.writerow([r.archivo, f"{r.t_s:.3f}", r.indice])
+            writer.writerow([r.file, f"{r.t_s:.3f}", r.index])
     return path
 
 
@@ -391,18 +392,17 @@ def load_frames_index(path: Path | str = FRAMES_INDEX) -> list[FrameRow]:
         raise FileNotFoundError(
             f"No existe {path}. Corre primero: python -m spectro extract"
         )
-    with path.open(encoding="utf-8") as fh:
-        return [
-            FrameRow(archivo=r["archivo"], t_s=float(r["t_s"]), indice=int(r["indice"]))
-            for r in csv.DictReader(fh)
-        ]
+    return [
+        FrameRow(file=r["file"], t_s=float(r["t_s"]), index=int(r["index"]))
+        for r in read_csv_rows(path)
+    ]
 
 
 def index_from_dir(frames_dir: Path | str = FRAMES_DIR) -> list[FrameRow]:
     """Reconstruye el indice mirando los nombres de archivo (que llevan el tiempo)."""
     frames_dir = Path(frames_dir)
     return [
-        FrameRow(archivo=p.name, t_s=time_from_name(p.name), indice=i)
+        FrameRow(file=p.name, t_s=time_from_name(p.name), index=i)
         for i, p in enumerate(sorted(frames_dir.glob("t_*.jpg")), start=1)
     ]
 

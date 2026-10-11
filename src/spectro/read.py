@@ -21,10 +21,10 @@ Interfaz publica:
     assemble(digits, decimal_after) -> float
     load_readings(path) -> list[Reading]
     write_read_meta(path, templates_dir, n) / load_read_meta(path)   (huella de la biblioteca)
-    outputs_state(readings, templates_dir) -> str   (al_dia | desactualizadas | sin_huella | sin_lectura)
+    outputs_state(readings, templates_dir) -> str   (up_to_date | stale | no_fingerprint | no_reading)
 
-``run_read`` escribe ``read_meta.json`` junto a ``readings.csv``: ``huella`` de la biblioteca,
-``fecha`` y cantidad de ``plantillas``. El formato de ``readings.csv`` no cambia.
+``run_read`` escribe ``read_meta.json`` junto a ``readings.csv``: ``fingerprint`` de la biblioteca,
+``date`` y cantidad de ``templates``. El formato de ``readings.csv`` no cambia.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .compat import normalize_keys, read_csv_rows
 from .config import Config
 from .extract import FRAMES_DIR, load_roi_sidecar
 from .imaging import cell_glyphs, load_frame, ncc
@@ -53,24 +54,24 @@ READ_META = Path("out/read_meta.json")
 class Reading:
     """El resultado de leer un fotograma."""
 
-    archivo: str
+    file: str
     t_s: float
-    indice: int
-    valor: float | None = None
-    confianza: float = 0.0
-    caracteres: str = ""
+    index: int
+    value: float | None = None
+    confidence: float = 0.0
+    chars: str = ""
     #: Corrimiento aplicado a la ROI, heredado de qc.
     dx: int = 0
     dy: int = 0
-    estado: str = "ok"
+    status: str = "ok"
     scores: list[float] = field(default_factory=list)
     #: Minimo del margen entre la mejor etiqueta y la mejor de otra etiqueta, por celda.
-    #: Junto con ``confianza`` es lo que decide si una lectura se acepta.
-    margen: float = 0.0
+    #: Junto con ``confidence`` es lo que decide si una lectura se acepta.
+    margin: float = 0.0
 
     @property
     def is_valid(self) -> bool:
-        return self.estado == "ok" and self.valor is not None
+        return self.status == "ok" and self.value is not None
 
 
 def assemble(digits: str, decimal_after: int, negative: bool = False) -> float:
@@ -84,10 +85,10 @@ def assemble(digits: str, decimal_after: int, negative: bool = False) -> float:
         raise ValueError(
             f"decimal_after={decimal_after} fuera de rango para {len(digits)} digitos"
         )
-    entero = digits[:decimal_after] or "0"
-    decimales = digits[decimal_after:]
-    valor = float(f"{entero}.{decimales}") if decimales else float(entero)
-    return -valor if negative and valor != 0.0 else valor
+    integer = digits[:decimal_after] or "0"
+    decimals = digits[decimal_after:]
+    value = float(f"{integer}.{decimals}") if decimals else float(integer)
+    return -value if negative and value != 0.0 else value
 
 
 def match_slot(glyph: np.ndarray, library: list[Template]) -> tuple[str, float, float]:
@@ -119,7 +120,7 @@ def read_frame(
     ``offset`` es el corrimiento que midio ``qc`` para este fotograma: la ROI se
     mueve con la escena en vez de quedarse clavada en coordenadas absolutas.
     """
-    reading = Reading(archivo="", t_s=0.0, indice=0)
+    reading = Reading(file="", t_s=0.0, index=0)
     separators = set(cfg.digits.separator_slots or [])
     sign_slot = cfg.digits.sign_slot
     negative = False
@@ -144,7 +145,7 @@ def read_frame(
                 or best < cfg.templates.min_score
                 or margin < cfg.templates.min_margin
             ):
-                reading.estado = "low_confidence"
+                reading.status = "low_confidence"
             else:
                 negative = True
             continue
@@ -153,24 +154,24 @@ def read_frame(
         margins.append(margin)
         chars.append(label)
         if best < cfg.templates.min_score or margin < cfg.templates.min_margin:
-            reading.estado = "low_confidence"
+            reading.status = "low_confidence"
         if i in separators and label != ".":
             # El separador no matcheo un punto: la ROI no esta donde deberia.
-            reading.estado = "low_confidence"
+            reading.status = "low_confidence"
         if i not in separators and not label.isdigit():
-            reading.estado = "low_confidence"
+            reading.status = "low_confidence"
 
-    reading.caracteres = "".join(chars)
+    reading.chars = "".join(chars)
     reading.scores = scores
-    reading.confianza = float(min(scores)) if scores else 0.0
-    reading.margen = float(min(margins)) if margins else 1.0
-    if reading.estado == "ok":
+    reading.confidence = float(min(scores)) if scores else 0.0
+    reading.margin = float(min(margins)) if margins else 1.0
+    if reading.status == "ok":
         skip = separators | ({sign_slot} if sign_slot is not None else set())
         digits = "".join(c for i, c in enumerate(chars) if i not in skip)
         try:
-            reading.valor = assemble(digits, cfg.digits.decimal_after, negative)
+            reading.value = assemble(digits, cfg.digits.decimal_after, negative)
         except ValueError:
-            reading.estado = "low_confidence"
+            reading.status = "low_confidence"
     return reading
 
 
@@ -189,11 +190,11 @@ def flag_spikes(readings: list[Reading], max_rate: float) -> int:
         dt_span = nxt.t_s - prev.t_s
         if min(dt_prev, dt_next, dt_span) <= 0:
             continue
-        rate_prev = abs(cur.valor - prev.valor) / dt_prev
-        rate_next = abs(cur.valor - nxt.valor) / dt_next
-        rate_span = abs(nxt.valor - prev.valor) / dt_span
+        rate_prev = abs(cur.value - prev.value) / dt_prev
+        rate_next = abs(cur.value - nxt.value) / dt_next
+        rate_span = abs(nxt.value - prev.value) / dt_span
         if rate_prev > max_rate and rate_next > max_rate and rate_span <= max_rate:
-            cur.estado = "spike"
+            cur.status = "spike"
             flagged += 1
     return flagged
 
@@ -211,26 +212,26 @@ def run_read(
     library = load(templates_dir)
     qc_rows = load_qc_report(qc_path)
     frames_roi = load_roi_sidecar(frames_dir)
-    etiquetas = sorted({t.label for t in library})
+    labels = sorted({t.label for t in library})
     if verbose:
-        print(f"== read ==\n  biblioteca: {len(library)} plantillas ({', '.join(etiquetas)})")
-    aviso = warn_missing_sign(cfg, library)
-    if aviso:  # solo avisa: las lecturas y el codigo de salida no cambian
-        print("  " + aviso.replace("\n", "\n  "), file=sys.stderr)
+        print(f"== read ==\n  biblioteca: {len(library)} plantillas ({', '.join(labels)})")
+    warning = warn_missing_sign(cfg, library)
+    if warning:  # solo avisa: las lecturas y el codigo de salida no cambian
+        print("  " + warning.replace("\n", "\n  "), file=sys.stderr)
 
     readings: list[Reading] = []
     for row in qc_rows:
         if not row.passed_qc:
             continue
         try:
-            gray = load_frame(frames_dir / row.archivo, cfg)
+            gray = load_frame(frames_dir / row.file, cfg)
         except RuntimeError:
             continue
         try:
             reading = read_frame(gray, cfg, library, frames_roi, row.offset)
         except ValueError:  # la ROI no cabe en el fotograma: lectura descartada
-            reading = Reading(row.archivo, row.t_s, row.indice, estado="roi_fuera")
-        reading.archivo, reading.t_s, reading.indice = row.archivo, row.t_s, row.indice
+            reading = Reading(row.file, row.t_s, row.index, status="roi_outside")
+        reading.file, reading.t_s, reading.index = row.file, row.t_s, row.index
         reading.dx, reading.dy = row.dx, row.dy
         readings.append(reading)
 
@@ -238,18 +239,18 @@ def run_read(
     write_readings(readings, output)
     write_read_meta(Path(output).with_name(READ_META.name), templates_dir, len(library))
 
-    estado_por_archivo = {r.archivo: r.estado for r in readings}
+    status_by_file = {r.file: r.status for r in readings}
     for row in qc_rows:
-        if row.archivo in estado_por_archivo:
-            row.estado = estado_por_archivo[row.archivo]
+        if row.file in status_by_file:
+            row.status = status_by_file[row.file]
     write_qc_report(qc_rows, qc_path)
 
     if verbose:
-        validas = sum(1 for r in readings if r.is_valid)
-        baja = sum(1 for r in readings if r.estado == "low_confidence")
-        print(f"  {validas}/{len(readings)} lecturas validas")
-        if baja:
-            print(f"    descartadas por baja confianza: {baja}")
+        valid = sum(1 for r in readings if r.is_valid)
+        low = sum(1 for r in readings if r.status == "low_confidence")
+        print(f"  {valid}/{len(readings)} lecturas validas")
+        if low:
+            print(f"    descartadas por baja confianza: {low}")
         if spikes:
             print(f"    descartadas por spike (|dAbs|/dt > {cfg.read.max_rate}): {spikes}")
         print(f"  lecturas crudas: {output}")
@@ -264,22 +265,22 @@ def write_readings(readings: list[Reading], path: Path | str = READINGS) -> Path
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(
-            ["archivo", "t_s", "indice", "valor", "confianza", "margen", "caracteres", "dx", "dy",
-             "estado"]
+            ["file", "t_s", "index", "value", "confidence", "margin", "chars", "dx", "dy",
+             "status"]
         )
         for r in readings:
             writer.writerow(
                 [
-                    r.archivo,
+                    r.file,
                     f"{r.t_s:.3f}",
-                    r.indice,
-                    "" if r.valor is None else f"{r.valor:.6g}",
-                    f"{r.confianza:.4f}",
-                    f"{r.margen:.4f}",
-                    r.caracteres,
+                    r.index,
+                    "" if r.value is None else f"{r.value:.6g}",
+                    f"{r.confidence:.4f}",
+                    f"{r.margin:.4f}",
+                    r.chars,
                     r.dx,
                     r.dy,
-                    r.estado,
+                    r.status,
                 ]
             )
     return path
@@ -290,9 +291,9 @@ def write_read_meta(path: Path | str, templates_dir: Path | str, n_templates: in
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     meta = {
-        "huella": fingerprint(templates_dir),
-        "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "plantillas": n_templates,
+        "fingerprint": fingerprint(templates_dir),
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "templates": n_templates,
     }
     path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return path
@@ -305,35 +306,35 @@ def load_read_meta(path: Path | str) -> dict | None:
         meta = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return meta if isinstance(meta, dict) else None
+    return normalize_keys(meta) if isinstance(meta, dict) else None
 
 
 #: Estados de las salidas de una corrida frente a la biblioteca vigente (``outputs_state``).
-SIN_LECTURA, AL_DIA, DESACTUALIZADAS, SIN_HUELLA = (
-    "sin_lectura", "al_dia", "desactualizadas", "sin_huella")
+NO_READING, UP_TO_DATE, STALE, NO_FINGERPRINT = (
+    "no_reading", "up_to_date", "stale", "no_fingerprint")
 
 
 def outputs_state(
-    readings: Path | str, templates_dir: Path | str, huella: str | None = None
+    readings: Path | str, templates_dir: Path | str, lib_fingerprint: str | None = None
 ) -> str:
     """Si ``readings.csv`` se produjo con la biblioteca de hoy.
 
     Compara la huella de ``read_meta.json`` con la de la biblioteca. Un ``readings.csv``
     anterior a la huella (sin ``read_meta.json``) se juzga por fecha: mas viejo que la
-    plantilla mas nueva = ``desactualizadas``; si no, ``sin_huella`` (no se sabe). ``huella``
+    plantilla mas nueva = ``stale``; si no, ``no_fingerprint`` (no se sabe). ``fingerprint``
     evita recalcular la de la biblioteca cuando quien llama ya la tiene.
     """
     readings = Path(readings)
     if not readings.exists():
-        return SIN_LECTURA
+        return NO_READING
     meta = load_read_meta(readings.with_name(READ_META.name))
     if meta is not None:
-        actual = fingerprint(templates_dir) if huella is None else huella
-        return AL_DIA if meta.get("huella") == actual else DESACTUALIZADAS
-    plantillas = list(Path(templates_dir).glob("*.png")) if Path(templates_dir).is_dir() else []
-    if any(p.stat().st_mtime > readings.stat().st_mtime for p in plantillas):
-        return DESACTUALIZADAS
-    return SIN_HUELLA
+        actual = fingerprint(templates_dir) if lib_fingerprint is None else lib_fingerprint
+        return UP_TO_DATE if meta.get("fingerprint") == actual else STALE
+    templates = list(Path(templates_dir).glob("*.png")) if Path(templates_dir).is_dir() else []
+    if any(p.stat().st_mtime > readings.stat().st_mtime for p in templates):
+        return STALE
+    return NO_FINGERPRINT
 
 
 def load_readings(path: Path | str = READINGS) -> list[Reading]:
@@ -341,20 +342,19 @@ def load_readings(path: Path | str = READINGS) -> list[Reading]:
     if not path.exists():
         raise FileNotFoundError(f"No existe {path}. Corre primero: python -m spectro read")
     out: list[Reading] = []
-    with path.open(encoding="utf-8") as fh:
-        for r in csv.DictReader(fh):
-            out.append(
-                Reading(
-                    archivo=r["archivo"],
-                    t_s=float(r["t_s"]),
-                    indice=int(r["indice"]),
-                    valor=float(r["valor"]) if r["valor"] else None,
-                    confianza=float(r["confianza"]),
-                    margen=float(r.get("margen") or 0.0),
-                    caracteres=r["caracteres"],
-                    dx=int(r.get("dx", 0) or 0),
-                    dy=int(r.get("dy", 0) or 0),
-                    estado=r["estado"],
-                )
+    for r in read_csv_rows(path):
+        out.append(
+            Reading(
+                file=r["file"],
+                t_s=float(r["t_s"]),
+                index=int(r["index"]),
+                value=float(r["value"]) if r["value"] else None,
+                confidence=float(r["confidence"]),
+                margin=float(r.get("margin") or 0.0),
+                chars=r["chars"],
+                dx=int(r.get("dx", 0) or 0),
+                dy=int(r.get("dy", 0) or 0),
+                status=r["status"],
             )
+        )
     return out

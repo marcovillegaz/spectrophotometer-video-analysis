@@ -270,7 +270,7 @@ def test_auto_engancha_la_roi_sobre_los_digitos(proyecto_calibrado, library):
     assert (cfg.roi.w, cfg.roi.h) == (original.w, original.h)
     assert cfg.qc.reference_frame == "t_0000000.000.jpg"
     # La prueba que importa: con esa ROI el numero se lee bien.
-    assert read_frame(corrido, cfg, library).valor == pytest.approx(0.245)
+    assert read_frame(corrido, cfg, library).value == pytest.approx(0.245)
 
 
 def test_auto_hereda_la_geometria_de_la_calib(proyecto_calibrado):
@@ -398,3 +398,96 @@ def test_extract_hereda_el_fps_de_la_corrida(proyecto_calibrado, monkeypatch):
 def test_new_con_video_inexistente_falla(tmp_path):
     globales = ["--runs-dir", str(tmp_path / "runs"), "--calib-dir", str(tmp_path / "calib")]
     assert main(globales + ["new", str(tmp_path / "no_existe.MOV")]) != 0
+
+
+# ==========================================================================
+# RunContext: el reporte de qc se parsea una sola vez y names() coincide
+# ==========================================================================
+def _ctx_corrida(tmp_path, filas, con_reporte=True, frames=()):
+    """Una corrida de juguete con ``qc_report.csv`` (``filas`` = ``[(archivo, estado, dx, dy)]``)."""
+    from spectro.qc import QCRow, write_qc_report
+
+    run = RunPaths.for_run("r1", base=tmp_path).create()
+    make_config().save(run.config)
+    for nombre in frames:
+        (run.frames / nombre).write_bytes(b"x")
+    if con_reporte:
+        write_qc_report([QCRow(file=a, t_s=float(i), index=i + 1, status=e, dx=dx, dy=dy)
+                         for i, (a, e, dx, dy) in enumerate(filas)], run.qc_report)
+    return run
+
+
+FILAS = [("t_0000030.000.jpg", "ok", 1, 2), ("t_0000010.000.jpg", "dark", 0, 0),
+         ("t_0000020.000.jpg", "ok", -3, 4), ("t_0000040.000.jpg", "roi_outside", 0, 0)]
+
+
+def test_run_context_load_parsea_el_reporte_de_qc_una_sola_vez(tmp_path, monkeypatch):
+    """Rompe: volver a llamar a ``load_qc_report`` desde ``names()``/``items()`` (parsear el CSV de nuevo)."""
+    import spectro.qc as qc
+    from spectro.project import RunContext
+
+    run = _ctx_corrida(tmp_path, FILAS)
+    llamadas = []
+    original = qc.load_qc_report
+    monkeypatch.setattr(qc, "load_qc_report", lambda *a, **k: (llamadas.append("load_qc_report"), original(*a, **k))[1])
+    ctx = RunContext.load(run)
+    ctx.names()
+    ctx.names()
+    ctx.items()
+    assert llamadas == ["load_qc_report"]
+
+
+def test_names_conserva_el_orden_del_reporte_y_solo_los_que_pasaron_qc(tmp_path):
+    """Rompe: ordenar alfabeticamente, incluir los descartados o cambiar el orden respecto del reporte de QC."""
+    from spectro.project import RunContext
+    from spectro.qc import load_qc_report
+
+    run = _ctx_corrida(tmp_path, FILAS)
+    ctx = RunContext.load(run)
+    assert ctx.names() == ["t_0000030.000.jpg", "t_0000020.000.jpg"]
+    filas = load_qc_report(run.qc_report)
+    assert ctx.names() == [r.file for r in filas if r.status == "ok"]
+    assert ctx.offsets == {"t_0000030.000.jpg": (1, 2), "t_0000010.000.jpg": (0, 0),
+                           "t_0000020.000.jpg": (-3, 4), "t_0000040.000.jpg": (0, 0)}
+    assert ctx.offsets == {r.file: (r.dx, r.dy) for r in filas}
+    assert ctx.has_qc
+
+
+def test_names_sin_reporte_usa_los_fotogramas_de_la_carpeta(tmp_path):
+    """Rompe: ``names()`` vacio cuando no hay reporte (``None or []``)."""
+    from spectro.project import RunContext
+
+    run = _ctx_corrida(tmp_path, [], con_reporte=False, frames=["t_0000002.000.jpg", "t_0000001.000.jpg"])
+    ctx = RunContext.load(run)
+    assert ctx.offsets == {} and not ctx.has_qc
+    assert ctx.names() == ["t_0000001.000.jpg", "t_0000002.000.jpg"]
+
+
+def test_names_con_reporte_sin_filas_que_pasaron_cae_a_la_carpeta(tmp_path):
+    """Rompe: devolver una lista vacia cuando el reporte descarto todo (comportamiento previo: fotogramas de la carpeta)."""
+    from spectro.project import RunContext
+
+    run = _ctx_corrida(tmp_path, [("t_0000001.000.jpg", "dark", 0, 0)], frames=["t_0000001.000.jpg", "t_0000005.000.jpg"])
+    assert RunContext.load(run).names() == ["t_0000001.000.jpg", "t_0000005.000.jpg"]
+
+
+def test_names_con_reporte_solo_con_encabezado_no_rompe(tmp_path):
+    """Rompe: indexar la primera fila de un reporte vacio."""
+    from spectro.project import RunContext
+
+    run = _ctx_corrida(tmp_path, [], frames=["t_0000001.000.jpg"])
+    ctx = RunContext.load(run)
+    assert ctx.offsets == {} and ctx.names() == ["t_0000001.000.jpg"]
+
+
+def test_run_context_con_reporte_explicito_gana_al_derivado(tmp_path):
+    """Rompe: ignorar el argumento ``qc_report`` al armar los corrimientos y los nombres."""
+    from spectro.project import RunContext
+    from spectro.qc import QCRow, write_qc_report
+
+    run = _ctx_corrida(tmp_path, FILAS)
+    otro = tmp_path / "otro_qc.csv"
+    write_qc_report([QCRow(file="t_0000099.000.jpg", t_s=99.0, index=1, dx=5, dy=6)], otro)
+    ctx = RunContext.load(run, qc_report=otro)
+    assert ctx.names() == ["t_0000099.000.jpg"] and ctx.offsets == {"t_0000099.000.jpg": (5, 6)}
+    assert ctx.qc_report == otro

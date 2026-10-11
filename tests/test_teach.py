@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from conftest import make_config, render_display
+from conftest import render_display
 from spectro import teach as T
 from spectro.imaging import ncc
 from spectro.library import dedup
@@ -51,7 +51,7 @@ def test_truth_conserva_texto_y_signo(tmp_path):
     p = tmp_path / "truth.csv"
     T.save_truth(p, [T.Sample("b.jpg", "-0.000"), T.Sample("a.jpg", "0.500")])
     got = T.load_truth(p)
-    assert [(s.archivo, s.valor) for s in got] == [("a.jpg", "0.500"), ("b.jpg", "-0.000")]
+    assert [(s.file, s.value) for s in got] == [("a.jpg", "0.500"), ("b.jpg", "-0.000")]
     assert T.load_truth(tmp_path / "no_existe.csv") == []
 
 
@@ -80,7 +80,7 @@ def test_offset_alinea_los_glifos(cfg_sign, tmp_path):
     samples = write_frames(tmp_path, dx=5, dy=-3)
     (tmp_path / "ref").mkdir()
     ref = write_frames(tmp_path / "ref", texts=["-0.123"])  # sin desplazar
-    con, _, _ = T.build_pool(samples[:1], cfg_sign, tmp_path, {samples[0].archivo: (5, -3)})
+    con, _, _ = T.build_pool(samples[:1], cfg_sign, tmp_path, {samples[0].file: (5, -3)})
     sin, _, _ = T.build_pool(samples[:1], cfg_sign, tmp_path, None)
     limpio, _, _ = T.build_pool(ref, cfg_sign, tmp_path / "ref")
     n_con = min(ncc(a.image, b.image) for a, b in zip(con, limpio))
@@ -94,12 +94,12 @@ def test_write_library_reemplaza_y_keep_no_pisa(cfg_sign, tmp_path):
     lib = tmp_path / "lib"
     lib.mkdir()
     (lib / "viejo_0.png").write_bytes(b"x")
-    nuevas = T.write_library(pool, lib, cfg_sign)
+    nuevas = T.write_library(pool, lib)
     assert not (lib / "viejo_0.png").exists()
     assert (lib / "minus_0.png").exists() and (lib / "dot_0.png").exists()
     assert set(nuevas) == set("0123456789.-")
     antes = {p.name: p.read_bytes() for p in lib.glob("*.png")}
-    T.write_library(pool, lib, cfg_sign, keep=True)
+    T.write_library(pool, lib, keep=True)
     despues = {p.name: p.read_bytes() for p in lib.glob("*.png")}
     assert all(despues[k] == v for k, v in antes.items())  # nada pisado
     assert len(despues) >= len(antes)
@@ -116,10 +116,10 @@ def test_max_per_label(cfg_sign, tmp_path):
 
 def test_validate_senala_el_valor_mal_escrito(cfg_sign, tmp_path):
     samples = write_frames(tmp_path)
-    samples[0] = T.Sample(samples[0].archivo, "7.123")  # el display dice -0.123
+    samples[0] = T.Sample(samples[0].file, "7.123")  # el display dice -0.123
     pool, datas, _ = T.build_pool(samples, cfg_sign, tmp_path)
     rep = T.validate(datas, pool, cfg_sign)
-    assert samples[0].archivo in [r.archivo for r in rep.mismatches]
+    assert samples[0].file in [r.file for r in rep.mismatches]
     assert rep.confusion  # alguna confusion registrada
 
 
@@ -127,8 +127,8 @@ def test_validate_avisa_caracter_sin_ejemplos(cfg_sign, tmp_path):
     samples = write_frames(tmp_path, texts=["-0.123", " 4.567"])
     pool, datas, _ = T.build_pool(samples, cfg_sign, tmp_path)
     rep = T.validate(datas, pool, cfg_sign)
-    r = next(r for r in rep.results if r.escrito == "-0.123")
-    assert "-" in r.faltan and not r.coincide
+    r = next(r for r in rep.results if r.typed == "-0.123")
+    assert "-" in r.missing and not r.matches
 
 
 def test_evaluate_library_y_report(cfg_sign, library_sign, tmp_path):
@@ -137,7 +137,7 @@ def test_evaluate_library_y_report(cfg_sign, library_sign, tmp_path):
     rep = T.evaluate_library(datas, library_sign, cfg_sign)
     assert rep.exact == rep.total == 2
     out = T.write_report(rep, tmp_path / "out" / "teach_report.csv")
-    assert out.exists() and "coincide" in out.read_text(encoding="utf-8")
+    assert out.exists() and "matches" in out.read_text(encoding="utf-8")
 
 
 def test_muestra_con_valor_de_otra_geometria_se_descarta(cfg_sign, tmp_path):

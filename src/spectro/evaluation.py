@@ -5,9 +5,9 @@ fotogramas con valor conocido que el lector no vio al aprender. Se lee cada uno 
 la biblioteca vigente y el resultado se separa en tres, porque al proyecto le importa
 mas abstenerse que equivocarse:
 
-* ``correcta``    el lector acepto la lectura y coincide con el valor escrito;
-* ``erronea``     el lector acepto la lectura y **no** coincide (lo grave);
-* ``descartada``  el lector se abstuvo (``low_confidence``): un hueco honesto.
+* ``correct``    el lector acepto la lectura y coincide con el valor escrito;
+* ``wrong``     el lector acepto la lectura y **no** coincide (lo grave);
+* ``discarded``  el lector se abstuvo (``low_confidence``): un hueco honesto.
 
 Se informa la tasa de error *entre las aceptadas* y la cobertura (aceptadas / total),
 con intervalos de Wilson al 95 %, que no se salen de [0, 1] ni con pocas muestras.
@@ -17,7 +17,7 @@ Dos advertencias que el informe repite porque inflan la exactitud sin avisar:
 * **valores distintos**: si los fotogramas de prueba comparten pocos valores, la
   prueba es mas chica de lo que parece y el intervalo (que supone independencia) es
   optimista;
-* **tipo**: ``misma_corrida`` mide ese video; ``otro_video`` (la corrida no tiene
+* **tipo**: ``same_run`` mide ese video; ``other_video`` (la corrida no tiene
   entrenamiento propio) es el hold-out por video, la prueba mas honesta.
 
 Interfaz publica:
@@ -28,7 +28,7 @@ Interfaz publica:
     evaluate_test(...)                         -> TestReport      (envoltorio)
     format_test_report(report)                 -> list[str]
     write_test_report(report, path)            -> Path
-    append_history(path, report, when, huella) -> Path   (columna ``huella`` al final; tolera historiales viejos)
+    append_history(path, report, when, fingerprint) -> Path   (columna ``fingerprint`` al final; tolera historiales viejos)
     load_history(path)                         -> list[dict]
 """
 
@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from .compat import read_csv_rows
 from .config import Config
 from .read import Reading, read_frame
 from .sampling import leakage
@@ -49,8 +50,8 @@ from .teach import Sample, SampleData, SampleResult, ValidationReport, build_poo
 
 #: Cabecera de ``teach_history.csv``: una fila por evaluacion.
 HISTORY_FIELDS = [
-    "fecha", "tipo", "plantillas", "entrenamiento", "prueba", "valores_distintos",
-    "correctas", "erroneas", "descartadas", "exactitud", "error_aceptadas", "cobertura", "huella",
+    "date", "kind", "templates", "training", "test", "distinct_values",
+    "correct", "wrong", "discarded", "accuracy", "accepted_error", "coverage", "fingerprint",
 ]
 
 
@@ -60,21 +61,21 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
         return 0.0, 1.0
     p = k / n
     den = 1 + z * z / n
-    centro = (p + z * z / (2 * n)) / den
-    mitad = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
-    return max(0.0, centro - mitad), min(1.0, centro + mitad)
+    center = (p + z * z / (2 * n)) / den
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
+    return max(0.0, center - half), min(1.0, center + half)
 
 
 @dataclass
 class TestResult:
     __test__ = False  # que pytest no lo tome por una clase de tests
 
-    archivo: str
-    escrito: str
-    leido: str
-    estado: str
-    confianza: float
-    resultado: str  # correcta | erronea | descartada
+    file: str
+    typed: str
+    read_value: str
+    status: str
+    confidence: float
+    result: str  # correcta | erronea | descartada
 
 
 @dataclass
@@ -82,63 +83,62 @@ class TestReport:
     __test__ = False
 
     results: list[TestResult] = field(default_factory=list)
-    tipo: str = "otro_video"
+    kind: str = "other_video"
     n_train: int = 0
     n_templates: int = 0
     leaks: list[tuple[str, str, float]] = field(default_factory=list)
     missing_chars: list[str] = field(default_factory=list)
-    char_accuracy: dict[str, tuple[int, int]] = field(default_factory=dict)
-    errores: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     def _count(self, what: str) -> int:
-        return sum(1 for r in self.results if r.resultado == what)
+        return sum(1 for r in self.results if r.result == what)
 
     @property
     def n(self) -> int:
         return len(self.results)
 
     @property
-    def correctas(self) -> int:
-        return self._count("correcta")
+    def correct(self) -> int:
+        return self._count("correct")
 
     @property
-    def erroneas(self) -> int:
-        return self._count("erronea")
+    def wrong(self) -> int:
+        return self._count("wrong")
 
     @property
-    def descartadas(self) -> int:
-        return self._count("descartada")
+    def discarded(self) -> int:
+        return self._count("discarded")
 
     @property
-    def aceptadas(self) -> int:
-        return self.correctas + self.erroneas
+    def accepted(self) -> int:
+        return self.correct + self.wrong
 
     @property
-    def exactitud(self) -> float:
-        return self.correctas / self.n if self.n else 0.0
+    def accuracy(self) -> float:
+        return self.correct / self.n if self.n else 0.0
 
     @property
-    def error_aceptadas(self) -> float:
-        return self.erroneas / self.aceptadas if self.aceptadas else 0.0
+    def accepted_error(self) -> float:
+        return self.wrong / self.accepted if self.accepted else 0.0
 
     @property
-    def cobertura(self) -> float:
-        return self.aceptadas / self.n if self.n else 0.0
+    def coverage(self) -> float:
+        return self.accepted / self.n if self.n else 0.0
 
     @property
-    def valores_distintos(self) -> int:
-        return len({r.escrito for r in self.results})
+    def distinct_values(self) -> int:
+        return len({r.typed for r in self.results})
 
 
 @dataclass
-class Lectura:
+class SampleRead:
     """Una muestra leida con una biblioteca: lo que comparten la validacion y la prueba."""
 
     data: SampleData
     #: ``None`` si no habia con que leer (biblioteca vacia y ``skip_empty``).
     reading: Reading | None
     #: Caracteres de la muestra que la biblioteca usada no tiene (solo leave-one-out).
-    faltan: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
 
 
 def evaluate(
@@ -146,7 +146,7 @@ def evaluate(
     library: list[Template] | Callable[[SampleData], tuple[list[Template], list[str]]],
     cfg: Config,
     skip_empty: bool = False,
-) -> list[Lectura]:
+) -> list[SampleRead]:
     """Lee cada muestra con la biblioteca: **el unico evaluador** del proyecto.
 
     ``library`` es una lista (la biblioteca vigente, igual para todas) o una funcion
@@ -154,71 +154,66 @@ def evaluate(
     la propia muestra). La lectura es ``read.read_frame``, la misma que usa ``read``.
     El resultado se reduce a un informe con ``to_validation`` o ``to_test_report``.
     """
-    out: list[Lectura] = []
+    out: list[SampleRead] = []
     for d in datas:
-        lib, faltan = library(d) if callable(library) else (library, [])
+        lib, missing = library(d) if callable(library) else (library, [])
         reading = None if (skip_empty and not lib) else read_frame(
             d.gray, d.cfg or cfg, lib, d.frames_roi, d.offset)
-        out.append(Lectura(d, reading, faltan))
+        out.append(SampleRead(d, reading, missing))
     return out
 
 
-def to_validation(lecturas: list[Lectura]) -> ValidationReport:
+def to_validation(reads: list[SampleRead]) -> ValidationReport:
     """Reduce a ``ValidationReport``: coincidencia exacta con lo escrito y confusiones."""
     report = ValidationReport()
-    for item in lecturas:
+    for item in reads:
         d, r = item.data, item.reading
         if r is None:
             report.results.append(SampleResult(
-                d.ident, d.sample.valor, "", 0.0, "sin_biblioteca", False, item.faltan))
+                d.ident, d.sample.value, "", 0.0, "no_library", False, item.missing))
             continue
         expected = "".join(d.cells)
-        ok = r.caracteres == expected and r.estado == "ok"
+        ok = r.chars == expected and r.status == "ok"
         report.results.append(SampleResult(
-            d.ident, d.sample.valor, r.caracteres.strip(), r.confianza, r.estado,
-            ok, item.faltan))
-        for want, got in zip(expected, r.caracteres):
+            d.ident, d.sample.value, r.chars.strip(), r.confidence, r.status,
+            ok, item.missing))
+        for want, got in zip(expected, r.chars):
             if want != got:
                 report.confusion[(want, got)] += 1
     return report
 
 
 def to_test_report(
-    lecturas: list[Lectura], library: list[Template], train: list[Sample], gap_s: float,
-    test: list[Sample], errores: list[str],
+    reads: list[SampleRead], library: list[Template], train: list[Sample], gap_s: float,
+    test: list[Sample], errors: list[str],
 ) -> TestReport:
     """Reduce a ``TestReport``: correcta / erronea / descartada y exactitud por caracter."""
     report = TestReport(
-        tipo="misma_corrida" if train else "otro_video",
+        kind="same_run" if train else "other_video",
         n_train=len(train),
         n_templates=len(library),
         leaks=leakage(train, test, gap_s) if train else [],
     )
-    report.errores = errores
+    report.errors = errors
     labels = {t.label for t in library}
     absent: set[str] = set()
-    per_char: dict[str, list[int]] = {}
-    for item in lecturas:
+    for item in reads:
         d, r = item.data, item.reading
         expected = "".join(d.cells)
-        accepted = r.estado == "ok"
+        accepted = r.status == "ok"
         if not accepted:
-            res = "descartada"
-        elif r.caracteres == expected:
-            res = "correcta"
+            res = "discarded"
+        elif r.chars == expected:
+            res = "correct"
         else:
-            res = "erronea"
+            res = "wrong"
         report.results.append(TestResult(
-            d.sample.archivo, d.sample.valor, r.caracteres.strip(), r.estado, r.confianza, res))
-        for want, got in zip(expected, r.caracteres):
+            d.sample.file, d.sample.value, r.chars.strip(), r.status, r.confidence, res))
+        for want, _ in zip(expected, r.chars):
             if want == " ":
                 continue
-            c = per_char.setdefault(want, [0, 0])
-            c[1] += 1
-            c[0] += want == got
             if want not in labels:
                 absent.add(want)
-    report.char_accuracy = {k: (v[0], v[1]) for k, v in sorted(per_char.items())}
     report.missing_chars = sorted(absent)
     return report
 
@@ -234,8 +229,8 @@ def evaluate_test(
 ) -> TestReport:
     """Lee cada fotograma de prueba con la biblioteca vigente y clasifica el resultado."""
     train = train or []
-    _, datas, errores = build_pool(test, cfg, frames_dir, offsets)
-    return to_test_report(evaluate(datas, library, cfg), library, train, gap_s, test, errores)
+    _, datas, errors = build_pool(test, cfg, frames_dir, offsets)
+    return to_test_report(evaluate(datas, library, cfg), library, train, gap_s, test, errors)
 
 
 def format_test_report(report: TestReport, title: str = "prueba") -> list[str]:
@@ -243,20 +238,20 @@ def format_test_report(report: TestReport, title: str = "prueba") -> list[str]:
     n = report.n
     if n == 0:
         return [f"{title}: no hay muestras de prueba"]
-    tipo = ("misma corrida (optimista: mide este video)" if report.tipo == "misma_corrida"
+    kind = ("misma corrida (optimista: mide este video)" if report.kind == "same_run"
             else "otro video (hold-out por video)")
-    lines = [f"{title} [{tipo}]: {n} muestras, {report.valores_distintos} valores distintos"]
-    lo, hi = wilson(report.correctas, n)
-    lines.append(f"  correctas {report.correctas}/{n} = {report.exactitud:.1%}  [IC95 {lo:.1%} a {hi:.1%}]")
-    if report.aceptadas:
-        elo, ehi = wilson(report.erroneas, report.aceptadas)
-        lines.append(f"  erroneas aceptadas {report.erroneas}/{report.aceptadas} = "
-                     f"{report.error_aceptadas:.1%}  [IC95 {elo:.1%} a {ehi:.1%}]")
+    lines = [f"{title} [{kind}]: {n} muestras, {report.distinct_values} valores distintos"]
+    lo, hi = wilson(report.correct, n)
+    lines.append(f"  correctas {report.correct}/{n} = {report.accuracy:.1%}  [IC95 {lo:.1%} a {hi:.1%}]")
+    if report.accepted:
+        elo, ehi = wilson(report.wrong, report.accepted)
+        lines.append(f"  erroneas aceptadas {report.wrong}/{report.accepted} = "
+                     f"{report.accepted_error:.1%}  [IC95 {elo:.1%} a {ehi:.1%}]")
     else:
         lines.append("  erroneas aceptadas: el lector no acepto ninguna lectura")
-    lines.append(f"  descartadas {report.descartadas}/{n}   cobertura {report.cobertura:.1%}")
-    if report.valores_distintos < n / 2:
-        lines.append(f"  aviso: solo {report.valores_distintos} valores distintos en {n} fotogramas; "
+    lines.append(f"  descartadas {report.discarded}/{n}   cobertura {report.coverage:.1%}")
+    if report.distinct_values < n / 2:
+        lines.append(f"  aviso: solo {report.distinct_values} valores distintos en {n} fotogramas; "
                      "el intervalo supone muestras independientes y es optimista")
     if report.leaks:
         lines.append(f"  aviso: {len(report.leaks)} fotogramas de prueba estan a menos de unos segundos de "
@@ -264,9 +259,9 @@ def format_test_report(report: TestReport, title: str = "prueba") -> list[str]:
     if report.missing_chars:
         lines.append(f"  aviso: la biblioteca no tiene {', '.join(report.missing_chars)}; "
                      "esos caracteres no se pueden leer")
-    if report.tipo == "misma_corrida":
+    if report.kind == "same_run":
         lines.append("  para medir videos nuevos, reserva un video sin entrenamiento propio como prueba")
-    for e in report.errores:
+    for e in report.errors:
         lines.append(f"  muestra descartada: {e}")
     return lines
 
@@ -276,13 +271,13 @@ def summary_lines(report: TestReport) -> list[str]:
     n = report.n
     if n == 0:
         return ["prueba: no hay muestras"]
-    lo, hi = wilson(report.correctas, n)
-    avisos = report.valores_distintos < n / 2 or bool(report.leaks) or bool(report.missing_chars)
-    tipo = "misma corrida" if report.tipo == "misma_corrida" else "otro video"
+    lo, hi = wilson(report.correct, n)
+    warnings = report.distinct_values < n / 2 or bool(report.leaks) or bool(report.missing_chars)
+    kind = "misma corrida" if report.kind == "same_run" else "otro video"
     return [
-        f"{'! ' if avisos else ''}prueba ({tipo}): {n} muestras, {report.valores_distintos} valores",
-        f"{report.correctas} correctas · {report.erroneas} erroneas · {report.descartadas} descartadas",
-        f"exactitud {report.exactitud:.0%} [{lo:.0%}-{hi:.0%}]  error aceptadas {report.error_aceptadas:.1%}",
+        f"{'! ' if warnings else ''}prueba ({kind}): {n} muestras, {report.distinct_values} valores",
+        f"{report.correct} correctas · {report.wrong} erroneas · {report.discarded} descartadas",
+        f"exactitud {report.accuracy:.0%} [{lo:.0%}-{hi:.0%}]  error aceptadas {report.accepted_error:.1%}",
     ]
 
 
@@ -291,41 +286,43 @@ def write_test_report(report: TestReport, path: Path | str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["archivo", "escrito", "leido", "estado", "confianza", "resultado"])
+        w.writerow(["file", "typed", "read_value", "status", "confidence", "result"])
         for r in report.results:
-            w.writerow([r.archivo, r.escrito, r.leido, r.estado, f"{r.confianza:.3f}", r.resultado])
+            w.writerow([r.file, r.typed, r.read_value, r.status, f"{r.confidence:.3f}", r.result])
     return path
 
 
 def append_history(
-    path: Path | str, report: TestReport, when: datetime | None = None, huella: str = ""
+    path: Path | str, report: TestReport, when: datetime | None = None, fingerprint: str = ""
 ) -> Path:
     """Agrega una fila al historial: la curva de aprendizaje por ronda.
 
-    ``huella`` es la de la biblioteca con la que se evaluo (``library.fingerprint``). Un
+    ``fingerprint`` es la de la biblioteca con la que se evaluo (``library.fingerprint``). Un
     historial anterior a esa columna se completa con valores vacios antes de agregar.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    nuevo = not path.exists()
-    if not nuevo:
-        viejas = load_history(path)
-        if viejas and "huella" not in viejas[0]:
+    is_new = not path.exists()
+    if not is_new:
+        old = load_history(path)
+        with path.open(encoding="utf-8", newline="") as fh:
+            raw_header = next(csv.reader(fh), [])
+        if old and raw_header != HISTORY_FIELDS:  # historial viejo: encabezado en espanol o sin ``fingerprint``
             with path.open("w", encoding="utf-8", newline="") as fh:
                 w = csv.writer(fh)
                 w.writerow(HISTORY_FIELDS)
-                for f in viejas:
+                for f in old:
                     w.writerow([f.get(k, "") for k in HISTORY_FIELDS])
     with path.open("a", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh)
-        if nuevo:
+        if is_new:
             w.writerow(HISTORY_FIELDS)
         w.writerow([
-            (when or datetime.now()).strftime("%Y-%m-%d %H:%M:%S"), report.tipo,
-            report.n_templates, report.n_train, report.n, report.valores_distintos,
-            report.correctas, report.erroneas, report.descartadas,
-            f"{report.exactitud:.4f}", f"{report.error_aceptadas:.4f}", f"{report.cobertura:.4f}",
-            huella,
+            (when or datetime.now()).strftime("%Y-%m-%d %H:%M:%S"), report.kind,
+            report.n_templates, report.n_train, report.n, report.distinct_values,
+            report.correct, report.wrong, report.discarded,
+            f"{report.accuracy:.4f}", f"{report.accepted_error:.4f}", f"{report.coverage:.4f}",
+            fingerprint,
         ])
     return path
 
@@ -334,5 +331,4 @@ def load_history(path: Path | str) -> list[dict]:
     path = Path(path)
     if not path.exists():
         return []
-    with path.open(encoding="utf-8", newline="") as fh:
-        return list(csv.DictReader(fh))
+    return read_csv_rows(path)

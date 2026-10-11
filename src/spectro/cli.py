@@ -13,11 +13,11 @@ Comandos:
     teach       biblioteca, muestras y pruebas, por areas (ver teach_cli.py)
     qc         filtro de calidad -> runs/<id>/out/qc_report.csv
     read        fotogramas -> valores numericos
-    report      -> absorbancia.csv, preview.png, contact_sheet.png
+    report      -> absorbance.csv, preview.png, contact_sheet.png
     run         extract -> qc -> read -> report
     batch       new -> extract -> calibrate --auto -> run, por cada video, y runs/batch_report.csv
 
-Las rutas no se tipean: ``--run <id>`` deriva las ocho desde ``RunPaths``
+Las rutas no se tipean: ``--run <id>`` deriva las nueve desde ``RunPaths``
 (ver ``project.py``). Un flag explicito siempre le gana a lo derivado, asi que
 se puede apuntar una etapa a una carpeta cualquiera sin dejar de usar ``--run``.
 """
@@ -58,7 +58,7 @@ def _parse_roi(text: str) -> ROI:
 # Resolucion de rutas: --run deriva, un flag explicito gana
 # --------------------------------------------------------------------------
 #: Cada flag de ruta y de donde sale cuando viene en ``None``. Es la tabla que
-#: convierte un ``--run <id>`` en las ocho rutas del pipeline.
+#: convierte un ``--run <id>`` en las nueve rutas del pipeline.
 _DERIVED_PATHS = {
     "config": lambda run, calib: run.config,
     "output": lambda run, calib: run.frames,
@@ -72,36 +72,36 @@ _DERIVED_PATHS = {
 }
 
 
-def _run_missing_message(args: argparse.Namespace, faltantes: list[str]) -> str:
+def _run_missing_message(args: argparse.Namespace, missing: list[str]) -> str:
     """El error de ``--run`` ausente, con las corridas disponibles listadas.
 
     Adivinar cual es la corrida mezclaria datos de dos experimentos en silencio,
     que es la peor forma de perder datos de laboratorio: sin ruido.
     """
-    corridas = list_runs(runs_dir=args.runs_dir)
-    flags = ", ".join("--" + f.replace("_", "-") for f in faltantes)
-    lineas = [
+    runs = list_runs(runs_dir=args.runs_dir)
+    flags = ", ".join("--" + f.replace("_", "-") for f in missing)
+    lines = [
         f"falta --run: no se sabe sobre que corrida trabajar ({flags} sin valor).",
     ]
-    if corridas:
-        lineas.append(f"Corridas disponibles en {args.runs_dir}/:")
-        lineas += [f"  {c}" for c in corridas]
-        lineas.append(f"Ejemplo: python -m spectro {args.comando} --run {corridas[-1]}")
+    if runs:
+        lines.append(f"Corridas disponibles en {args.runs_dir}/:")
+        lines += [f"  {c}" for c in runs]
+        lines.append(f"Ejemplo: python -m spectro {args.command} --run {runs[-1]}")
     else:
-        lineas.append(f"No hay ninguna corrida en {args.runs_dir}/. Crea una con:")
-        lineas.append("  python -m spectro new videos/<video>.MOV")
-    lineas.append("Tambien podes pasar las rutas a mano: " + flags)
-    return "\n".join(lineas)
+        lines.append(f"No hay ninguna corrida en {args.runs_dir}/. Crea una con:")
+        lines.append("  python -m spectro new videos/<video>.MOV")
+    lines.append("Tambien podes pasar las rutas a mano: " + flags)
+    return "\n".join(lines)
 
 
 def resolve_paths(args: argparse.Namespace) -> str | None:
     """Completa las rutas en ``None`` desde ``--run``. Devuelve el error, o None.
 
-    Deja ademas ``args.run_paths`` y ``args.calib_paths`` para los handlers que
-    necesitan el layout entero (``calibrate --auto``, ``doctor``).
+    Deja ademas ``args.calib_paths`` para los handlers que necesitan el layout de
+    ``calib/`` (``calibrate --auto``, ``doctor``).
     """
     args.calib_paths = CalibPaths.at(args.calib_dir)
-    args.run_paths = (
+    run_paths = (
         RunPaths.for_run(args.run, runs_dir=args.runs_dir, calib_dir=args.calib_dir)
         if getattr(args, "run", None)
         else None
@@ -110,15 +110,15 @@ def resolve_paths(args: argparse.Namespace) -> str | None:
     # doctor, new y batch miran el layout entero, no una corrida: no exigen --run.
     if not getattr(args, "needs_paths", True):
         return None
-    presentes = [name for name in _DERIVED_PATHS if hasattr(args, name)]
-    if args.run_paths is not None:
-        for name in presentes:
+    present = [name for name in _DERIVED_PATHS if hasattr(args, name)]
+    if run_paths is not None:
+        for name in present:
             if getattr(args, name) is None:  # un flag explicito le gana a lo derivado
-                setattr(args, name, str(_DERIVED_PATHS[name](args.run_paths, args.calib_paths)))
+                setattr(args, name, str(_DERIVED_PATHS[name](run_paths, args.calib_paths)))
 
-    faltantes = [name for name in presentes if getattr(args, name) is None]
-    if faltantes:
-        return _run_missing_message(args, faltantes)
+    missing = [name for name in present if getattr(args, name) is None]
+    if missing:
+        return _run_missing_message(args, missing)
     return None
 
 
@@ -139,7 +139,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for mod, label in (
         ("numpy", "numpy"),
         ("cv2", "opencv-python"),
-        ("pandas", "pandas"),
         ("matplotlib", "matplotlib"),
         ("imageio_ffmpeg", "imageio-ffmpeg"),
     ):
@@ -184,20 +183,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"  reference.jpg   : {'si' if calib.reference.exists() else 'NO (calibrate --auto no puede registrar)'}")
     print(f"  templates/      : {calib.n_templates()} plantillas")
 
-    corridas = list_runs(runs_dir=args.runs_dir)
-    print(f"\nCorridas ({args.runs_dir}/): {len(corridas)}")
-    for run_id in corridas:
+    runs = list_runs(runs_dir=args.runs_dir)
+    print(f"\nCorridas ({args.runs_dir}/): {len(runs)}")
+    for run_id in runs:
         run = RunPaths.for_run(run_id, runs_dir=args.runs_dir, calib_dir=args.calib_dir)
         n_frames = len(list(run.frames.glob("t_*.jpg"))) if run.frames.is_dir() else 0
         if run.config.exists():
             cfg = Config.load(run.config)
-            estado = "calibrada" if cfg.roi.is_valid() else "SIN CALIBRAR"
+            status = "calibrada" if cfg.roi.is_valid() else "SIN CALIBRAR"
             video = Path(cfg.video).name or "?"
         else:
-            estado, video = "sin config.json", "?"
-        salida = "absorbancia.csv" if run.is_done() else "sin salida"
-        print(f"  {run_id:22s} {estado:14s} {n_frames:5d} fotogramas  {salida:15s} video={video}")
-    if not corridas:
+            status, video = "sin config.json", "?"
+        output_label = run.existing_absorbance.name if run.is_done() else "sin salida"
+        print(f"  {run_id:22s} {status:14s} {n_frames:5d} fotogramas  {output_label:15s} video={video}")
+    if not runs:
         print("  (ninguna) crea una con: python -m spectro new videos/<video>.MOV")
 
     print("\nEstado:", "listo" if ok else "faltan dependencias")
@@ -259,17 +258,17 @@ def cmd_batch(args: argparse.Namespace) -> int:
     from .report import acceptance_for
 
     # los umbrales se validan antes de procesar nada: un flag mal tipeado no debe costar horas
-    acc = acceptance_for(args.calib_paths.config, args.min_exactitud, args.max_error,
-                         args.min_cobertura)
+    acc = acceptance_for(args.calib_paths.config, args.min_accuracy, args.max_error,
+                         args.min_coverage)
     videos = _expand_videos(args.videos)
     if not videos:
         print("No hay videos que procesar.")
         return 2
 
     print(f"== batch ==\n  {len(videos)} video(s), fps={args.fps}")
-    hechas: list[str] = []
-    salteadas: list[tuple[str, str]] = []
-    fallidas: list[tuple[str, str]] = []
+    done: list[str] = []
+    skipped_runs: list[tuple[str, str]] = []
+    failed: list[tuple[str, str]] = []
 
     for i, video in enumerate(videos, 1):
         run_id = run_id_from_video(video, None)
@@ -278,53 +277,53 @@ def cmd_batch(args: argparse.Namespace) -> int:
 
         if run.is_done() and args.skip_existing:
             print(f"  ya tiene {run.absorbance}; se saltea (--no-skip-existing para rehacerla)")
-            salteadas.append((run_id, "ya procesada"))
+            skipped_runs.append((run_id, "ya procesada"))
             continue
 
         # Se re-invoca el parser en vez de armar Namespaces a mano: asi cada
         # etapa recibe exactamente los mismos defaults que en la linea de comandos.
-        globales = ["--runs-dir", str(args.runs_dir), "--calib-dir", str(args.calib_dir)]
-        de_la_corrida = globales + ["--run", run_id]
-        etapas: list[tuple[str, list[str]]] = [
-            ("new", globales + ["new", str(video), "--fps", str(args.fps), "--force"]),
-            ("extract", de_la_corrida + ["extract", "--fps", str(args.fps)]),
-            ("calibrate", de_la_corrida + ["calibrate", "--auto",
+        global_args = ["--runs-dir", str(args.runs_dir), "--calib-dir", str(args.calib_dir)]
+        run_args = global_args + ["--run", run_id]
+        stages: list[tuple[str, list[str]]] = [
+            ("new", global_args + ["new", str(video), "--fps", str(args.fps), "--force"]),
+            ("extract", run_args + ["extract", "--fps", str(args.fps)]),
+            ("calibrate", run_args + ["calibrate", "--auto",
                                            "--search-px", str(args.search_px),
                                            "--min-score", str(args.min_score)]),
-            ("qc", de_la_corrida + ["qc"]),
-            ("read", de_la_corrida + ["read"]),
-            ("report", de_la_corrida + ["report"]),
+            ("qc", run_args + ["qc"]),
+            ("read", run_args + ["read"]),
+            ("report", run_args + ["report"]),
         ]
 
-        permitidas = batch_stages(args.until)
-        for etapa, argv in (e for e in etapas if e[0] in permitidas):
+        allowed = batch_stages(args.until)
+        for stage, argv in (e for e in stages if e[0] in allowed):
             rc = main(argv)
             if rc:
-                if etapa == "calibrate":
+                if stage == "calibrate":
                     print(f"  calibracion automatica sin exito: {run_id} queda pendiente")
-                    salteadas.append((run_id, "pendiente de calibracion manual"))
+                    skipped_runs.append((run_id, "pendiente de calibracion manual"))
                 else:
-                    fallidas.append((run_id, f"fallo en {etapa} (codigo {rc})"))
+                    failed.append((run_id, f"fallo en {stage} (codigo {rc})"))
                 break
         else:
-            hechas.append(run_id)
+            done.append(run_id)
 
     print(f"\n== resumen del lote ==")
-    for run_id in hechas:
+    for run_id in done:
         print(f"  [ok]       {run_id:22s} " + ("procesada" if args.until == "report"
                                                 else f"preparada hasta {args.until}"))
-    for run_id, motivo in salteadas:
-        print(f"  [salteada] {run_id:22s} {motivo}")
-    for run_id, motivo in fallidas:
-        print(f"  [ERROR]    {run_id:22s} {motivo}")
-    pendientes = [r for r, m in salteadas if "manual" in m]
-    if pendientes:
+    for run_id, reason in skipped_runs:
+        print(f"  [salteada] {run_id:22s} {reason}")
+    for run_id, reason in failed:
+        print(f"  [ERROR]    {run_id:22s} {reason}")
+    pending = [r for r, m in skipped_runs if "manual" in m]
+    if pending:
         print("\n  Pendientes de calibracion manual:")
-        for run_id in pendientes:
+        for run_id in pending:
             print(f"    python -m spectro calibrate --run {run_id}")
     if args.until == "report":
-        _batch_report(args, hechas + [r for r, m in salteadas if m == "ya procesada"], acc)
-    return 1 if fallidas else 0
+        _batch_report(args, done + [r for r, m in skipped_runs if m == "ya procesada"], acc)
+    return 1 if failed else 0
 
 
 def _batch_report(args: argparse.Namespace, run_ids: list[str], acc) -> None:
@@ -335,42 +334,42 @@ def _batch_report(args: argparse.Namespace, run_ids: list[str], acc) -> None:
     if not run_ids:
         return
     calib = args.calib_paths
-    lib, huella = teach_cli.library_or_empty(args), fingerprint(calib.templates)
-    entradas = [
+    lib, lib_fp = teach_cli.library_or_empty(args), fingerprint(calib.templates)
+    entries = [
         load_run_input(RunPaths.for_run(r, runs_dir=args.runs_dir, calib_dir=args.calib_dir),
-                       calib, lib, huella=huella)
+                       calib, lib, fingerprint=lib_fp)
         for r in sorted(run_ids)
     ]
-    filas = batch_summary(entradas, acc)
-    destino = write_batch_report(filas, Path(args.runs_dir) / "batch_report.csv")
+    rows = batch_summary(entries, acc)
+    dest = write_batch_report(rows, Path(args.runs_dir) / "batch_report.csv")
     print("\n== reporte del lote ==")
-    for line in format_batch_table(filas):
+    for line in format_batch_table(rows):
         print(line)
     if not acc.is_set():
         print("  sin umbrales de aceptacion: el veredicto queda vacio. Fijalos con "
-              "--min-exactitud / --max-error / --min-cobertura o en la seccion 'acceptance' "
+              "--min-accuracy / --max-error / --min-coverage o en la seccion 'acceptance' "
               "de calib/config.json")
-    print(f"  reporte: {destino}")
+    print(f"  reporte: {dest}")
 
 
-def _expand_videos(patrones: list[str]) -> list[Path]:
+def _expand_videos(patterns: list[str]) -> list[Path]:
     """Rutas de video, expandiendo los comodines que la shell no expandio.
 
     PowerShell no hace globbing de los argumentos, asi que ``videos/*.MOV``
     llega literal; en bash llega ya expandido. Se soportan los dos.
     """
-    vistos: dict[Path, None] = {}
-    for patron in patrones:
-        p = Path(patron)
-        candidatos = sorted(Path(p.parent or ".").glob(p.name)) if any(
-            c in patron for c in "*?["
+    seen: dict[Path, None] = {}
+    for pattern in patterns:
+        p = Path(pattern)
+        candidates = sorted(Path(p.parent or ".").glob(p.name)) if any(
+            c in pattern for c in "*?["
         ) else [p]
-        for c in candidatos:
+        for c in candidates:
             if c.is_file():
-                vistos.setdefault(c, None)
-            elif "*" not in patron:
+                seen.setdefault(c, None)
+            elif "*" not in pattern:
                 print(f"  aviso: no existe {c}, se ignora")
-    return list(vistos)
+    return list(seen)
 
 
 def cmd_extract(args: argparse.Namespace) -> int:
@@ -500,10 +499,10 @@ _FLAGS_LAYOUT = (
 
 def _layout_parent() -> argparse.ArgumentParser:
     """Parser padre con los flags del layout, sin defaults propios."""
-    padre = argparse.ArgumentParser(add_help=False)
-    for flag, ayuda, _ in _FLAGS_LAYOUT:
-        padre.add_argument(flag, default=argparse.SUPPRESS, help=ayuda)
-    return padre
+    parent_parser = argparse.ArgumentParser(add_help=False)
+    for flag, help_text, _ in _FLAGS_LAYOUT:
+        parent_parser.add_argument(flag, default=argparse.SUPPRESS, help=help_text)
+    return parent_parser
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -515,23 +514,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    for flag, ayuda, defecto in _FLAGS_LAYOUT:
-        p.add_argument(flag, default=defecto, help=ayuda)
+    for flag, help_text, default_value in _FLAGS_LAYOUT:
+        p.add_argument(flag, default=default_value, help=help_text)
 
-    sub = p.add_subparsers(dest="comando", required=True)
+    sub = p.add_subparsers(dest="command", required=True)
     layout = _layout_parent()
 
-    def subcomando(nombre: str, **kwargs) -> argparse.ArgumentParser:
+    def subcommand(name: str, **kwargs) -> argparse.ArgumentParser:
         """Un subparser con los flags del layout ya incorporados."""
         kwargs["parents"] = [*kwargs.get("parents", []), layout]
-        return sub.add_parser(nombre, **kwargs)
+        return sub.add_parser(name, **kwargs)
 
     # -- doctor
-    d = subcomando("doctor", help="Diagnostico del entorno, la calib y las corridas")
+    d = subcommand("doctor", help="Diagnostico del entorno, la calib y las corridas")
     d.set_defaults(func=cmd_doctor, needs_paths=False)
 
     # -- new
-    n = subcomando("new", help="Da de alta una corrida a partir de un video",
+    n = subcommand("new", help="Da de alta una corrida a partir de un video",
                        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     n.add_argument("video", help="Ruta del video (.MOV/.mp4)")
     n.add_argument("--name", default=None,
@@ -566,13 +565,13 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--save-config", action="store_true",
                         help="Guardar video y fps en config.json")
 
-    e = subcomando("extract", help="Video -> fotogramas con nombre temporal",
+    e = subcommand("extract", help="Video -> fotogramas con nombre temporal",
                        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     add_extract_flags(e)
     e.set_defaults(func=cmd_extract)
 
     # -- calibrate
-    c = subcomando("calibrate", help="Define ROI, slots de digito y polaridad",
+    c = subcommand("calibrate", help="Define ROI, slots de digito y polaridad",
                        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     c.add_argument("--frame", default=None,
                    help="Fotograma a usar (default: el del medio de la carpeta de fotogramas)")
@@ -620,7 +619,7 @@ def build_parser() -> argparse.ArgumentParser:
     teach_cli.register(sub, layout)
 
     # -- qc
-    q = subcomando("qc", help="Filtro de calidad sobre la ROI",
+    q = subcommand("qc", help="Filtro de calidad sobre la ROI",
                        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     q.add_argument("--frames-dir", default=None, help="Carpeta de fotogramas")
     q.add_argument("--index", default=None, help="CSV de indice")
@@ -631,7 +630,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_qc)
 
     # -- read
-    r = subcomando("read", help="Fotogramas -> valores numericos via NCC",
+    r = subcommand("read", help="Fotogramas -> valores numericos via NCC",
                        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     r.add_argument("--frames-dir", default=None, help="Carpeta de fotogramas")
     r.add_argument("--qc-report", default=None,
@@ -643,7 +642,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=cmd_read)
 
     # -- report
-    rp = subcomando("report", help="Genera absorbancia.csv, preview y hoja de contacto",
+    rp = subcommand("report", help="Genera absorbance.csv, preview y hoja de contacto",
                         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     rp.add_argument("--readings", default=None, help="CSV de lecturas")
     rp.add_argument("--qc-report", default=None, help="Reporte de QC")
@@ -654,7 +653,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.set_defaults(func=cmd_report)
 
     # -- run
-    rn = subcomando("run", help="Pipeline completo: extract -> qc -> read -> report",
+    rn = subcommand("run", help="Pipeline completo: extract -> qc -> read -> report",
                         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     add_extract_flags(rn)
     rn.add_argument("--skip-extract", action="store_true",
@@ -670,13 +669,13 @@ def build_parser() -> argparse.ArgumentParser:
     rn.set_defaults(func=cmd_run)
 
     # -- batch
-    b = subcomando("batch", help="Procesa varios videos de punta a punta",
+    b = subcommand("batch", help="Procesa varios videos de punta a punta",
                        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     b.add_argument("videos", nargs="+",
                    help=f"Videos a procesar, ej. {VIDEOS_DIR}/*.MOV")
     b.add_argument("--fps", type=float, default=1.0, help="Frecuencia de muestreo en Hz")
     b.add_argument("--skip-existing", action=argparse.BooleanOptionalAction, default=True,
-                   help="Saltear las corridas que ya tienen out/absorbancia.csv")
+                   help="Saltear las corridas que ya tienen out/absorbance.csv")
     b.add_argument("--until", choices=list(BATCH_STAGES[3:]), default="report",
                    help=("Cortar despues de esta etapa. 'qc' prepara el pool de fotogramas "
                          "sin leer: sirve antes de armar la biblioteca (arranque en frio)"))
@@ -684,13 +683,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Margen de busqueda del ancla en calibrate --auto")
     b.add_argument("--min-score", type=float, default=0.6,
                    help="NCC minima del ancla en calibrate --auto")
-    for flag, ayuda in (
-        ("--min-exactitud", "Veredicto: exactitud minima sobre test.csv (fraccion, ej. 0.95)"),
+    for flag, help_text in (
+        ("--min-accuracy", "Veredicto: exactitud minima sobre test.csv (fraccion, ej. 0.95)"),
         ("--max-error", "Veredicto: error maximo entre las lecturas aceptadas de test.csv (fraccion)"),
-        ("--min-cobertura", "Veredicto: cobertura minima, ok / fotogramas extraidos (fraccion)"),
+        ("--min-coverage", "Veredicto: cobertura minima, ok / fotogramas extraidos (fraccion)"),
     ):
         b.add_argument(flag, type=float, default=None,
-                       help=f"{ayuda}. Sin valor se usa 'acceptance' de calib/config.json; "
+                       help=f"{help_text}. Sin valor se usa 'acceptance' de calib/config.json; "
                             "sin umbrales el veredicto queda vacio")
     b.set_defaults(func=cmd_batch, needs_paths=False)
 

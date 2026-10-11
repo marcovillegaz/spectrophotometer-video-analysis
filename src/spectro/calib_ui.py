@@ -22,7 +22,7 @@ p probar, r resetear, ENTER guardar, ESC cancelar.
 Interfaz publica:
     UIState, UIResult
     apply_action(state, action) -> UIState        apply_key(state, key) -> UIState
-    layout_panel(x0, height) -> Layout             hit_test(layout, x, y) -> str | None
+    layout_panel(x0, height) -> Layout             hit_test (reexportado de ui_common)
     slider_value(x, rect) -> float
     preview_reading(...) -> Preview                probe_frames(...) -> ProbeResult
     render(...) -> ndarray                         run_calibration_ui(...) -> UIResult | None
@@ -40,26 +40,40 @@ from .calibrate import _infer_separator_slots, refine_roi
 from .config import ROI, Config, DigitsConfig, TemplateConfig
 from .imaging import binarize, detect_polarity, load_frame, rotate, slot_boxes
 from .read import read_frame
+from .ui_common import (
+    BAD_C,
+    BAD_SCORE_C,
+    BG,
+    BTN_ON,
+    DIM,
+    FG,
+    GOOD_SCORE_C,
+    KEY_ENTER,
+    KEY_ESC,
+    OK_C,
+    PANEL_W,
+    YELLOW,
+    BaseLayout,
+    Button,
+    draw_button,
+    draw_char,
+    draw_text,
+    draw_titles,
+    hit_test,
+    open_window,
+    panel_geometry,
+    score_color,
+    slot_color,
+    window_closed,
+)
 
-YELLOW = (0, 255, 255)  # BGR: contrasta con el fondo azul del display
-GREEN = (0, 255, 0)
 MAX_ROT = 45.0
 ZOOM_LEVELS = (4, 8, 12, 16)
 LENS_W, LENS_H = 320, 200
-KEY_ENTER, KEY_ESC = 13, 27
 
-PANEL_W = 360
 PANEL_MIN_H = 800
 MAX_IMG_W, MAX_IMG_H = 1100, 760
 PROBE_N = 20
-
-BG = (38, 38, 38)
-FG = (230, 230, 230)
-BTN = (80, 80, 80)
-BTN_ON = (0, 200, 255)
-OK_C = (70, 170, 70)
-BAD_C = (60, 60, 190)
-DIM = (150, 150, 150)
 
 
 # --------------------------------------------------------------------------
@@ -176,27 +190,7 @@ def state_digits(state: UIState, polarity: str) -> DigitsConfig:
 # Layout del panel (coordenadas del canvas)
 # --------------------------------------------------------------------------
 @dataclass(frozen=True)
-class Button:
-    action: str
-    x: int
-    y: int
-    w: int
-    h: int
-    label: str
-
-    def contains(self, px: int, py: int) -> bool:
-        return self.x <= px < self.x + self.w and self.y <= py < self.y + self.h
-
-    @property
-    def center(self) -> tuple[int, int]:
-        return self.x + self.w // 2, self.y + self.h // 2
-
-
-@dataclass(frozen=True)
-class Layout:
-    x0: int
-    height: int
-    buttons: list[Button]
+class Layout(BaseLayout):
     slider: tuple[int, int, int, int]  # x, y, w, h
     zoom: tuple[int, int, int, int]    # recuadro de la ROI binarizada
     chars_y: int
@@ -204,12 +198,11 @@ class Layout:
     reading_y: int
     probe_y: int
     data_y: int
-    titles: dict[str, int] = field(default_factory=dict)
 
 
 def layout_panel(x0: int, height: int) -> Layout:
     """Posiciones de todos los botones y recuadros del panel que arranca en ``x0``."""
-    px, inner = x0 + 10, PANEL_W - 20
+    px, inner = panel_geometry(x0)
     b: list[Button] = []
     # -- ENCUADRE
     bw = (inner - 3 * 6) // 4
@@ -243,14 +236,6 @@ def layout_panel(x0: int, height: int) -> Layout:
         titles={"ENCUADRE": 12, "NUMERO": 160, "DATOS": 304, "VISTA PREVIA": 424,
                 "PRUEBA": 616},
     )
-
-
-def hit_test(layout: Layout, x: int, y: int) -> str | None:
-    """La accion del boton bajo ``(x, y)``, o ``None``."""
-    for btn in layout.buttons:
-        if btn.contains(x, y):
-            return btn.action
-    return None
 
 
 def in_slider(layout: Layout, x: int, y: int) -> bool:
@@ -314,7 +299,7 @@ def _draw_lens(canvas, img, state: UIState, roi: ROI | None, cursor, scale, pola
         digits = state_digits(state, polarity)
         for i, (x0, _) in enumerate(slot_boxes(roi.w, digits)):
             p0, p1 = to_lens(roi.x + x0, roi.y), to_lens(roi.x + x0, roi.y + roi.h)
-            cv2.line(patch, p0, p1, GREEN if i == digits.sign_slot else YELLOW, 1)
+            cv2.line(patch, p0, p1, slot_color(i, digits), 1)
     cx, cy = pw // 2, ph // 2
     cv2.line(patch, (cx - 14, cy), (cx - 3, cy), (0, 0, 255), 1)
     cv2.line(patch, (cx + 3, cy), (cx + 14, cy), (0, 0, 255), 1)
@@ -327,7 +312,7 @@ def _draw_lens(canvas, img, state: UIState, roi: ROI | None, cursor, scale, pola
     info = f"x={fx} y={fy}  x{z}"
     if state.roi is not None and state.roi.is_valid():
         info += f"  ROI {state.roi.w}x{state.roi.h}"
-    _text(canvas, info, lx + 4, ly + ph + 13, 0.4, FG)
+    draw_text(canvas, info, lx + 4, ly + ph + 13, 0.4, FG)
 
 
 # --------------------------------------------------------------------------
@@ -340,9 +325,9 @@ class Preview:
     roi: ROI | None = None
     chars: str = ""
     scores: list[float] = field(default_factory=list)
-    valor: float | None = None
-    estado: str = ""
-    confianza: float = 0.0
+    value: float | None = None
+    status: str = ""
+    confidence: float = 0.0
     separators: list[int] = field(default_factory=list)
     zoom: np.ndarray | None = None
     cuts: list[float] = field(default_factory=list)  # bordes de slot, fraccion del ancho
@@ -411,8 +396,8 @@ def preview_reading(
     except Exception as exc:  # la vista previa nunca debe tumbar la UI
         return Preview(False, f"Error: {exc}")
     return Preview(
-        True, roi=cfg.roi, chars=reading.caracteres, scores=list(reading.scores),
-        valor=reading.valor, estado=reading.estado, confianza=reading.confianza,
+        True, roi=cfg.roi, chars=reading.chars, scores=list(reading.scores),
+        value=reading.value, status=reading.status, confidence=reading.confidence,
         separators=list(cfg.digits.separator_slots), zoom=zoom, cuts=cuts,
     )
 
@@ -428,26 +413,26 @@ def probe_frames(
     if not frame_paths or not library:
         return out
     idx = np.linspace(0, len(frame_paths) - 1, min(n, len(frame_paths))).round().astype(int)
-    motivos: dict[str, int] = {}
-    valores: list[float] = []
+    reasons: dict[str, int] = {}
+    values: list[float] = []
     for i in sorted(set(int(v) for v in idx)):
         out.total += 1
         try:
             gray = load_frame(frame_paths[i], cfg)
             r = read_frame(gray, cfg, library)
         except Exception:
-            motivos["ilegible"] = motivos.get("ilegible", 0) + 1
+            reasons["ilegible"] = reasons.get("ilegible", 0) + 1
             continue
         if r.is_valid:
-            valores.append(r.valor)
+            values.append(r.value)
         else:
-            motivos[r.estado] = motivos.get(r.estado, 0) + 1
-    out.valid = len(valores)
-    if valores:
-        out.vmin, out.vmax = min(valores), max(valores)
-        out.negatives = sum(1 for v in valores if v < 0)
-    if motivos:
-        out.top_reason = max(motivos, key=motivos.get)
+            reasons[r.status] = reasons.get(r.status, 0) + 1
+    out.valid = len(values)
+    if values:
+        out.vmin, out.vmax = min(values), max(values)
+        out.negatives = sum(1 for v in values if v < 0)
+    if reasons:
+        out.top_reason = max(reasons, key=reasons.get)
     return out
 
 
@@ -472,20 +457,6 @@ def data_lines(
 # --------------------------------------------------------------------------
 # Render
 # --------------------------------------------------------------------------
-def _text(canvas, txt, x, y, scale=0.46, color=FG, bold=False):
-    cv2.putText(canvas, txt, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color,
-                2 if bold else 1, cv2.LINE_AA)
-
-
-def _button(canvas, b: Button, active: bool = False, color=None):
-    bg = BTN_ON if active else (color or BTN)
-    cv2.rectangle(canvas, (b.x, b.y), (b.x + b.w, b.y + b.h), bg, -1)
-    cv2.rectangle(canvas, (b.x, b.y), (b.x + b.w, b.y + b.h), (20, 20, 20), 1)
-    (tw, th), _ = cv2.getTextSize(b.label, cv2.FONT_HERSHEY_SIMPLEX, 0.46, 1)
-    _text(canvas, b.label, b.x + (b.w - tw) // 2, b.y + (b.h + th) // 2,
-          color=(0, 0, 0) if active else FG)
-
-
 def fit_scale(shape: tuple[int, ...]) -> float:
     return min(MAX_IMG_W / shape[1], MAX_IMG_H / shape[0], 1.0)
 
@@ -523,7 +494,7 @@ def render(
         digits = state_digits(state, polarity)
         for i, (x0, _) in enumerate(slot_boxes(roi.w, digits)):
             cv2.line(canvas, (x + int(x0 * scale), y), (x + int(x0 * scale), y + rh),
-                     GREEN if i == digits.sign_slot else YELLOW, 1)
+                     slot_color(i, digits), 1)
     if state.roi is not None and roi is not state.roi and state.roi.is_valid():
         d = state.roi  # lo que se arrastro, distinto de la ROI final ajustada
         cv2.rectangle(canvas, (int(d.x * scale), int(d.y * scale)),
@@ -533,35 +504,32 @@ def render(
         _draw_lens(canvas, img, state, roi, cursor, scale, polarity, iw)
 
     # -- panel
-    px = layout.x0 + 10
-    inner = PANEL_W - 20
-    for title, ty in layout.titles.items():
-        _text(canvas, title, px, ty + 14, 0.5, YELLOW, bold=True)
-        cv2.line(canvas, (px, ty + 20), (px + inner, ty + 20), (90, 90, 90), 1)
+    px, _ = panel_geometry(layout.x0)
+    draw_titles(canvas, layout)
 
-    _text(canvas, f"Rotacion  {state.rotation:+.1f} deg", px, 46, 0.5)
+    draw_text(canvas, f"Rotacion  {state.rotation:+.1f} deg", px, 46, 0.5)
     sx, sy, sw, sh = layout.slider
     cv2.rectangle(canvas, (sx, sy + sh // 2 - 2), (sx + sw, sy + sh // 2 + 2), (110, 110, 110), -1)
     cv2.line(canvas, (sx + sw // 2, sy), (sx + sw // 2, sy + sh), DIM, 1)
     kx = int(sx + (state.rotation + MAX_ROT) / (2 * MAX_ROT) * sw)
     cv2.rectangle(canvas, (kx - 5, sy), (kx + 5, sy + sh), BTN_ON, -1)
 
-    _text(canvas, f"Lupa x{state.zoom}", px + 168, 138, 0.46)
-    _text(canvas, f"Celdas de caracter   {state.n_digits}", px, 206)
-    _text(canvas, f"Digitos antes del punto   {state.decimal_after}", px, 240)
+    draw_text(canvas, f"Lupa x{state.zoom}", px + 168, 138, 0.46)
+    draw_text(canvas, f"Celdas de caracter   {state.n_digits}", px, 206)
+    draw_text(canvas, f"Digitos antes del punto   {state.decimal_after}", px, 240)
     for btn in layout.buttons:
         active = (btn.action == "sign" and state.sign) or (btn.action == "refine" and state.refine) \
             or (btn.action == "guides" and state.guides)
         color = {"ok": OK_C, "cancel": BAD_C}.get(btn.action)
-        _button(canvas, btn, active, color)
+        draw_button(canvas, btn, active, color)
 
     for k, line in enumerate(data_lines(state, preview, polarity, img.shape, library)):
-        _text(canvas, line, px, layout.data_y + 16 + k * 18, 0.4, FG)
+        draw_text(canvas, line, px, layout.data_y + 16 + k * 18, 0.4, FG)
 
     zx, zy, zw, zh = layout.zoom
     cv2.rectangle(canvas, (zx, zy), (zx + zw, zy + zh), (20, 20, 20), -1)
     if preview is None or not preview.enabled:
-        _text(canvas, preview.message if preview else "Dibuja la ROI sobre el numero",
+        draw_text(canvas, preview.message if preview else "Dibuja la ROI sobre el numero",
               px, zy + zh // 2 + 4, 0.45, DIM)
     else:
         if preview.zoom is not None and preview.zoom.size:
@@ -576,27 +544,28 @@ def render(
             cell_w = zs.shape[1] / max(len(preview.chars), 1)
             for i, ch in enumerate(preview.chars):
                 cx = int(zx + (i + 0.5) * cell_w)
-                _text(canvas, ch if ch != " " else "_", cx - 5, layout.chars_y, 0.7, FG, True)
+                draw_char(canvas, ch, cx - 5, layout.chars_y, 0.7, FG, True)
                 if i < len(preview.scores):
                     good = preview.scores[i] >= 0.6
-                    _text(canvas, f"{preview.scores[i]:.2f}" if preview.scores[i] < 1 else "1.0",
-                          cx - 14, layout.scores_y, 0.4, (80, 220, 80) if good else (80, 80, 240))
-        if preview.valor is not None:
-            msg, col = f"Lectura: {preview.valor:+.3f}   conf {preview.confianza:.2f}", (80, 220, 80)
+                    draw_text(canvas, f"{preview.scores[i]:.2f}" if preview.scores[i] < 1 else "1.0",
+                          cx - 14, layout.scores_y, 0.4, score_color(good))
+        if preview.value is not None:
+            msg, col = (f"Lectura: {preview.value:+.3f}   conf {preview.confidence:.2f}",
+                        GOOD_SCORE_C)
         else:
-            msg, col = f"No se puede leer ({preview.estado})", (80, 80, 240)
-        _text(canvas, msg, px, layout.reading_y + 10, 0.55, col, True)
+            msg, col = f"No se puede leer ({preview.status})", BAD_SCORE_C
+        draw_text(canvas, msg, px, layout.reading_y + 10, 0.55, col, True)
 
     if probing:
-        _text(canvas, "probando...", px, layout.probe_y, 0.45, YELLOW)
+        draw_text(canvas, "probando...", px, layout.probe_y, 0.45, YELLOW)
     elif probe is not None and probe.total:
-        rango = f"{probe.vmin:+.3f} .. {probe.vmax:+.3f}" if probe.valid else "sin valores"
-        _text(canvas, f"{probe.valid}/{probe.total} validas   {rango}", px, layout.probe_y, 0.45)
+        range_text = f"{probe.vmin:+.3f} .. {probe.vmax:+.3f}" if probe.valid else "sin valores"
+        draw_text(canvas, f"{probe.valid}/{probe.total} validas   {range_text}", px, layout.probe_y, 0.45)
         extra = f"{probe.negatives} negativas" if probe.valid else f"motivo: {probe.top_reason}"
         if probe.valid and probe.valid < probe.total:
             extra += f"   descarte: {probe.top_reason}"
-        _text(canvas, extra, px, layout.probe_y + 18, 0.4, DIM)
-        _text(canvas, "preliminar: sin re-registro de camara", px, layout.probe_y + 36, 0.38, DIM)
+        draw_text(canvas, extra, px, layout.probe_y + 18, 0.4, DIM)
+        draw_text(canvas, "preliminar: sin re-registro de camara", px, layout.probe_y + 36, 0.38, DIM)
     return canvas, layout
 
 
@@ -653,8 +622,7 @@ def run_calibration_ui(
         elif event == cv2.EVENT_LBUTTONUP:
             h["drag"], h["start"] = None, None
 
-    cv2.namedWindow(title, cv2.WINDOW_AUTOSIZE)
-    cv2.setMouseCallback(title, on_mouse)
+    open_window(title, on_mouse)
     result = None
     try:
         while True:
@@ -687,7 +655,7 @@ def run_calibration_ui(
             if k != 255:
                 h["state"] = apply_key(h["state"], k)
             st = h["state"]
-            if cv2.getWindowProperty(title, cv2.WND_PROP_VISIBLE) < 1 or st.cancelled:
+            if window_closed(title) or st.cancelled:
                 break
             if st.done:
                 roi = final_roi(gray, st, pol)

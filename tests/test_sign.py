@@ -9,9 +9,8 @@ import pytest
 from conftest import make_config, render_display
 from spectro.calibrate import _infer_separator_slots, refine_roi
 from spectro.config import ROI, Config
-from spectro.imaging import binarize, load_frame, normalize_glyph, slot_boxes
+from spectro.imaging import load_frame
 from spectro.read import assemble, read_frame
-from spectro.library import Template
 
 
 def test_assemble_negativo():
@@ -27,9 +26,9 @@ def test_assemble_cero_negativo_es_cero():
 @pytest.mark.parametrize("text,esperado", [("-0.245", -0.245), (" 0.245", 0.245), ("-1.789", -1.789)])
 def test_lee_signo(cfg_sign, library_sign, text, esperado):
     r = read_frame(render_display(text), cfg_sign, library_sign)
-    assert r.estado == "ok", r.caracteres
-    assert r.valor == pytest.approx(esperado)
-    assert r.caracteres == text
+    assert r.status == "ok", r.chars
+    assert r.value == pytest.approx(esperado)
+    assert r.chars == text
 
 
 def test_celda_vacia_con_ruido_es_positivo(cfg_sign, library_sign):
@@ -39,23 +38,23 @@ def test_celda_vacia_con_ruido_es_positivo(cfg_sign, library_sign):
     patch = img[cfg_sign.roi.y : cfg_sign.roi.y + 44, x0 : x0 + 26]
     patch += rng.integers(0, 3, patch.shape, dtype=np.uint8)
     r = read_frame(img, cfg_sign, library_sign)
-    assert r.valor == pytest.approx(0.245)
+    assert r.value == pytest.approx(0.245)
 
 
 def test_sin_plantilla_menos_se_descarta(cfg_sign, library_sign):
     lib = [t for t in library_sign if t.label != "-"]
     r = read_frame(render_display("-0.245"), cfg_sign, lib)
-    assert r.estado == "low_confidence" and r.valor is None
+    assert r.status == "low_confidence" and r.value is None
 
 
 def test_digito_en_celda_de_signo_se_descarta(cfg_sign, library_sign):
     r = read_frame(render_display("30.245"), cfg_sign, library_sign)
-    assert r.estado == "low_confidence"
+    assert r.status == "low_confidence"
 
 
 def test_config_sin_signo_no_cambia(cfg, library):
     r = read_frame(render_display("0.245"), cfg, library)
-    assert r.valor == pytest.approx(0.245)
+    assert r.value == pytest.approx(0.245)
 
 
 def test_config_vieja_carga_con_defaults():
@@ -90,7 +89,7 @@ def test_rotacion_se_compensa(cfg_sign, library_sign, tmp_path):
     cv2.imwrite(str(p), img)
     cfg_sign.rotation_deg = -3.0
     r = read_frame(load_frame(p, cfg_sign), cfg_sign, library_sign)
-    assert r.valor == pytest.approx(-0.245)
+    assert r.value == pytest.approx(-0.245)
 
 
 def test_roi_only_con_rotacion_falla(tmp_path):

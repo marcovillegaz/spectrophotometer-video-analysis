@@ -20,7 +20,7 @@ las rutas salen de ``RunPaths`` / ``CalibPaths``, y para probar sobre una copia 
 Interfaz publica:
     register(sub, layout)       registra el comando ``teach`` en el parser principal
     legacy_error(argv)          mensaje de migracion si se uso la sintaxis vieja (``teach --build``...)
-    MIGRACION                   la tabla "antes -> ahora"
+    MIGRATION                   la tabla "antes -> ahora"
 """
 
 from __future__ import annotations
@@ -29,14 +29,15 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+from .compat import LEGACY_FLAGS
 from .config import DEFAULT_MAX_PER_LABEL, Config
 from .project import RunContext, RunPaths, list_runs, require_run
 
 AREAS = ("status", "lib", "train", "check", "samples", "test")
 #: Flags del layout que llevan valor: se saltean al buscar el area.
-_LAYOUT_CON_VALOR = ("--run", "--runs-dir", "--calib-dir", "--config")
+_LAYOUT_WITH_VALUE = ("--run", "--runs-dir", "--calib-dir", "--config")
 
-MIGRACION = """\
+MIGRATION = """\
 teach ya no usa flags de modo: se elige un area y un verbo, y el id de la corrida va como argumento.
 
   antes                                   ahora
@@ -54,6 +55,7 @@ teach ya no usa flags de modo: se elige un area y un verbo, y el id de la corrid
   teach --run ID --add-test A=V           teach test add ID A=V
   teach --run ID --eval                   teach test eval ID
   teach --eval-all                        teach test eval
+  --min-exactitud / --min-cobertura       --min-accuracy / --min-coverage   (teach test eval, batch)
   (nuevo)                                 teach status | teach lib restore | teach test history ID
 
 --strategy, --seed, --gap, --keep y --max-per-label siguen existiendo, pero en el verbo al que sirven.
@@ -64,22 +66,24 @@ Areas: status, lib, train, check, samples, test. Ayuda de cada una: teach <area>
 # Sintaxis vieja
 # --------------------------------------------------------------------------
 def legacy_error(argv: list[str]) -> str | None:
-    """El mensaje de migracion si ``teach`` se uso sin area (la sintaxis de flags de modo)."""
+    """El mensaje de migracion si se uso la sintaxis vieja: ``teach`` sin area o un flag renombrado."""
+    if any(tok.split("=")[0] in LEGACY_FLAGS for tok in argv):
+        return MIGRATION
     i = 0
-    while i < len(argv) and argv[i].split("=")[0] in _LAYOUT_CON_VALOR:
+    while i < len(argv) and argv[i].split("=")[0] in _LAYOUT_WITH_VALUE:
         i += 1 if "=" in argv[i] else 2
     if i >= len(argv) or argv[i] != "teach":
         return None
-    resto = argv[i + 1:]
+    rest = argv[i + 1:]
     j = 0
-    while j < len(resto) and resto[j].split("=")[0] in _LAYOUT_CON_VALOR:
-        j += 1 if "=" in resto[j] else 2
-    if j < len(resto) and (resto[j] in AREAS or resto[j] in ("-h", "--help")):
+    while j < len(rest) and rest[j].split("=")[0] in _LAYOUT_WITH_VALUE:
+        j += 1 if "=" in rest[j] else 2
+    if j < len(rest) and (rest[j] in AREAS or rest[j] in ("-h", "--help")):
         return None
-    if j < len(resto) and not resto[j].startswith("-"):
-        return (f"area desconocida {resto[j]!r}. Areas: {', '.join(AREAS)}. "
+    if j < len(rest) and not rest[j].startswith("-"):
+        return (f"area desconocida {rest[j]!r}. Areas: {', '.join(AREAS)}. "
                 "Ayuda: python -m spectro teach --help")
-    return MIGRACION
+    return MIGRATION
 
 
 # --------------------------------------------------------------------------
@@ -137,18 +141,18 @@ def _fmt_counts(counts: dict[str, int]) -> str:
     return "  ".join(f"{k}:{v}" for k, v in counts.items())
 
 
-def _respaldos(args: argparse.Namespace) -> set[str]:
+def _backups(args: argparse.Namespace) -> set[str]:
     from . import library
 
     return set(library.list_backups(args.calib_paths.templates))
 
 
-def _linea_respaldo(args: argparse.Namespace, antes: set[str]) -> str:
+def _backup_line(args: argparse.Namespace, before: set[str]) -> str:
     """Que respaldo dejo ESTA operacion (los nombres nuevos), o que no habia nada que respaldar."""
-    nuevos = sorted(_respaldos(args) - antes)
-    if not nuevos:
+    new_backups = sorted(_backups(args) - before)
+    if not new_backups:
         return "  no hubo nada que respaldar (la biblioteca estaba vacia)"
-    return f"  respaldo: {nuevos[-1]}   (para deshacer: python -m spectro teach lib restore)"
+    return f"  respaldo: {new_backups[-1]}   (para deshacer: python -m spectro teach lib restore)"
 
 
 # --------------------------------------------------------------------------
@@ -166,7 +170,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     calib = args.calib_paths
     tdir = calib.templates
     lib = library_or_empty(args)
-    huella = library.fingerprint(tdir)
+    fingerprint = library.fingerprint(tdir)
     ids = _run_ids(args)
     runs = {r: _run_paths(args, r) for r in ids}
     cfgs = {r: Config.load(p.config) for r, p in runs.items()}
@@ -174,17 +178,17 @@ def cmd_status(args: argparse.Namespace) -> int:
     test = {r: load_truth(p.test) for r, p in runs.items()}
 
     print("== teach status ==")
-    print(f"biblioteca: {tdir}   {len(lib)} plantillas   huella {huella or '-'}")
-    cuenta = {c: sum(1 for t in lib if t.label == c) for c in ALL_CHARS}
-    print("  " + _fmt_counts(cuenta))
-    faltan = sorted(_required_chars(args) - {t.label for t in lib})
-    print(f"  faltan: {' '.join(repr(c) for c in faltan) if faltan else 'ninguno'}")
-    respaldos = library.list_backups(tdir)
-    print(f"  respaldos: {len(respaldos)}" + (f" (ultimo {respaldos[-1]})" if respaldos else ""))
+    print(f"biblioteca: {tdir}   {len(lib)} plantillas   huella {fingerprint or '-'}")
+    counts = {c: sum(1 for t in lib if t.label == c) for c in ALL_CHARS}
+    print("  " + _fmt_counts(counts))
+    missing = sorted(_required_chars(args) - {t.label for t in lib})
+    print(f"  faltan: {' '.join(repr(c) for c in missing) if missing else 'ninguno'}")
+    backups = library.list_backups(tdir)
+    print(f"  respaldos: {len(backups)}" + (f" (ultimo {backups[-1]})" if backups else ""))
     for r in ids:
-        aviso = library.warn_missing_sign(cfgs[r], lib)
-        if aviso:
-            print("  " + aviso.replace("\n", "\n  "))
+        warning = library.warn_missing_sign(cfgs[r], lib)
+        if warning:
+            print("  " + warning.replace("\n", "\n  "))
             break
 
     print(f"\ncorridas ({len(ids)}):")
@@ -194,74 +198,74 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  {'corrida':22s} {'entren.':>7s} {'prueba':>6s}  {'salidas':16s} ultima evaluacion")
         for r in ids:
             hist = load_history(runs[r].history)
-            ult = (f"{hist[-1]['fecha']}  exactitud {float(hist[-1]['exactitud']):.1%}"
+            last_eval_text = (f"{hist[-1]['date']}  exactitud {float(hist[-1]['accuracy']):.1%}"
                    if hist else "-")
-            estado = read.outputs_state(runs[r].readings, tdir, huella)
-            print(f"  {r:22s} {len(train[r]):7d} {len(test[r]):6d}  {estado:16s} {ult}")
+            status = read.outputs_state(runs[r].readings, tdir, fingerprint)
+            print(f"  {r:22s} {len(train[r]):7d} {len(test[r]):6d}  {status:16s} {last_eval_text}")
 
         print("\ndescartes de qc por motivo (fotogramas que no se leen):")
-        print(f"  {'corrida':22s} " + " ".join(f"{m[:9]:>9s}" for m in QC_REASONS))
+        print(f"  {'corrida':22s} " + " ".join(f"{m[:11]:>11s}" for m in QC_REASONS))
         for r in ids:
             if not runs[r].qc_report.exists():
                 print(f"  {r:22s} (sin qc_report.csv)")
                 continue
-            estados = [x.estado for x in load_qc_report(runs[r].qc_report)]
-            print(f"  {r:22s} " + " ".join(f"{estados.count(m):9d}" for m in QC_REASONS))
+            statuses = [x.status for x in load_qc_report(runs[r].qc_report)]
+            print(f"  {r:22s} " + " ".join(f"{statuses.count(m):11d}" for m in QC_REASONS))
 
     print("\nsiguiente paso:")
-    pasos = _siguientes_pasos(args, lib, huella, ids, runs, cfgs, train, test)
-    for p in pasos or ["nada pendiente"]:
+    steps = _next_steps(args, lib, fingerprint, ids, runs, cfgs, train, test)
+    for p in steps or ["nada pendiente"]:
         print(f"  - {p}")
     return 0
 
 
-def _siguientes_pasos(args, lib, huella, ids, runs, cfgs, train, test) -> list[str]:
+def _next_steps(args, lib, fingerprint, ids, runs, cfgs, train, test) -> list[str]:
     from . import read
     from .evaluation import load_history
 
     tdir = args.calib_paths.templates
-    pasos: list[str] = []
-    con_muestras = [r for r in ids if train[r]]
+    steps: list[str] = []
+    with_samples = [r for r in ids if train[r]]
     mtimes = [p.stat().st_mtime for p in tdir.glob("*.png")] if tdir.is_dir() else []
-    nueva = max(mtimes) if mtimes else 0.0
+    newest_mtime = max(mtimes) if mtimes else 0.0
     if not lib:
-        pasos.append("la biblioteca esta vacia: python -m spectro teach train" if con_muestras else
+        steps.append("la biblioteca esta vacia: python -m spectro teach train" if with_samples else
                      "no hay biblioteca ni muestras: python -m spectro teach samples label <id>")
     else:
-        sin_signo = [r for r in ids if cfgs[r].digits.sign_slot is not None
-                     and not any(s.valor.startswith("-") for s in train[r])]
-        if lib and not any(t.label == "-" for t in lib) and sin_signo:
-            pasos.append("falta la plantilla '-': etiqueta valores negativos con "
-                         f"python -m spectro teach samples label {sin_signo[0]}")
-        mas_nuevas = [r for r in con_muestras if runs[r].truth.stat().st_mtime > nueva]
-        if mas_nuevas:
-            pasos.append("hay muestras mas nuevas que la biblioteca ("
-                         + ", ".join(mas_nuevas) + "): python -m spectro teach train")
+        no_sign = [r for r in ids if cfgs[r].digits.sign_slot is not None
+                     and not any(s.value.startswith("-") for s in train[r])]
+        if lib and not any(t.label == "-" for t in lib) and no_sign:
+            steps.append("falta la plantilla '-': etiqueta valores negativos con "
+                         f"python -m spectro teach samples label {no_sign[0]}")
+        newer = [r for r in with_samples if runs[r].truth.stat().st_mtime > newest_mtime]
+        if newer:
+            steps.append("hay muestras mas nuevas que la biblioteca ("
+                         + ", ".join(newer) + "): python -m spectro teach train")
     for r in ids:
-        if read.outputs_state(runs[r].readings, tdir, huella) == read.DESACTUALIZADAS:
-            pasos.append(f"las salidas de {r} son anteriores a la biblioteca: "
+        if read.outputs_state(runs[r].readings, tdir, fingerprint) == read.STALE:
+            steps.append(f"las salidas de {r} son anteriores a la biblioteca: "
                          f"python -m spectro read --run {r}  y luego  report --run {r}")
-    sin_evaluar = []
+    not_evaluated = []
     for r in ids:
         if not test[r]:
             continue
         hist = load_history(runs[r].history)
         if not hist:
-            sin_evaluar.append(r)
-        elif hist[-1].get("huella"):  # la huella manda; las filas viejas se juzgan por fecha
-            if hist[-1]["huella"] != huella:
-                sin_evaluar.append(r)
+            not_evaluated.append(r)
+        elif hist[-1].get("fingerprint"):  # la huella manda; las filas viejas se juzgan por fecha
+            if hist[-1]["fingerprint"] != fingerprint:
+                not_evaluated.append(r)
         else:
             try:
-                ultima = datetime.strptime(hist[-1]["fecha"], "%Y-%m-%d %H:%M:%S").timestamp()
+                last_eval = datetime.strptime(hist[-1]["date"], "%Y-%m-%d %H:%M:%S").timestamp()
             except ValueError:
-                ultima = 0.0
-            if ultima < nueva:
-                sin_evaluar.append(r)
-    for r in sin_evaluar:
-        pasos.append(f"la prueba de {r} no se evaluo con la biblioteca vigente: "
+                last_eval = 0.0
+            if last_eval < newest_mtime:
+                not_evaluated.append(r)
+    for r in not_evaluated:
+        steps.append(f"la prueba de {r} no se evaluo con la biblioteca vigente: "
                      f"python -m spectro teach test eval {r}")
-    return pasos
+    return steps
 
 
 # --------------------------------------------------------------------------
@@ -277,35 +281,35 @@ def cmd_lib_list(args: argparse.Namespace) -> int:
     print(f"== biblioteca: {len(entries)} plantillas en {tdir}   huella {library.fingerprint(tdir) or '-'} ==")
     if args.usage:
         runs = gather_runs(args.runs_dir, args.calib_dir)
-        _, datas, errores = build_pool_runs(runs)
+        _, datas, errors = build_pool_runs(runs)
         library.usage(entries, datas)
-        celdas = sum(len(d.glyphs) for d in datas)
-        print(f"  uso medido sobre {celdas} celdas de {len(datas)} muestras de {len(runs)} corridas"
-              + (f" ({len(errores)} muestras no se pudieron procesar)" if errores else ""))
+        cells = sum(len(d.glyphs) for d in datas)
+        print(f"  uso medido sobre {cells} celdas de {len(datas)} muestras de {len(runs)} corridas"
+              + (f" ({len(errors)} muestras no se pudieron procesar)" if errors else ""))
     for ch in ALL_CHARS:
-        de_ch = [e for e in entries if e.label == ch]
+        with_char = [e for e in entries if e.label == ch]
         if not args.usage:
-            print(f"  {ch!r:5} x{len(de_ch)}  {' '.join(e.path.stem for e in de_ch)}")
+            print(f"  {ch!r:5} x{len(with_char)}  {' '.join(e.path.stem for e in with_char)}")
             continue
-        print(f"  {ch!r:5} x{len(de_ch)}")
-        for e in de_ch:
-            marca = "  DANINA: gana celdas de otro caracter" if e.errors else (
+        print(f"  {ch!r:5} x{len(with_char)}")
+        for e in with_char:
+            mark = "  DANINA: gana celdas de otro caracter" if e.errors else (
                 "  sin uso" if e.uses == 0 else "")
-            print(f"      {e.path.stem:8s} gana bien {e.uses:4d}   gana mal {e.errors:3d}{marca}")
-    faltan = sorted(_required_chars(args) - {e.label for e in entries})
-    print(f"  faltan: {' '.join(repr(c) for c in faltan) if faltan else 'ninguno'}")
+            print(f"      {e.path.stem:8s} gana bien {e.uses:4d}   gana mal {e.errors:3d}{mark}")
+    missing = sorted(_required_chars(args) - {e.label for e in entries})
+    print(f"  faltan: {' '.join(repr(c) for c in missing) if missing else 'ninguno'}")
     return 0
 
 
-def _entry_paths(args: argparse.Namespace, nombres: list[str]):
+def _entry_paths(args: argparse.Namespace, names: list[str]):
     from . import library
 
     by_name = {e.path.stem: e for e in library.list_entries(args.calib_paths.templates)}
     out = []
-    for nombre in nombres:
-        e = by_name.get(Path(nombre).stem)
+    for name in names:
+        e = by_name.get(Path(name).stem)
         if e is None:
-            raise ValueError(f"No existe la plantilla {nombre!r} en {args.calib_paths.templates}. "
+            raise ValueError(f"No existe la plantilla {name!r} en {args.calib_paths.templates}. "
                              "Mira los nombres con: python -m spectro teach lib list")
         out.append(e)
     return out
@@ -315,12 +319,12 @@ def cmd_lib_delete(args: argparse.Namespace) -> int:
     from . import library
 
     _guard(args)
-    entradas = _entry_paths(args, args.nombres)
-    antes = _respaldos(args)
-    library.delete([e.path for e in entradas])
-    print(f"{len(entradas)} plantillas borradas de {args.calib_paths.templates}: "
-          + " ".join(e.path.stem for e in entradas))
-    print(_linea_respaldo(args, antes))
+    entries = _entry_paths(args, args.names)
+    before = _backups(args)
+    library.delete([e.path for e in entries])
+    print(f"{len(entries)} plantillas borradas de {args.calib_paths.templates}: "
+          + " ".join(e.path.stem for e in entries))
+    print(_backup_line(args, before))
     return 0
 
 
@@ -328,11 +332,11 @@ def cmd_lib_relabel(args: argparse.Namespace) -> int:
     from . import library
 
     _guard(args)
-    (e,) = _entry_paths(args, [args.nombre])
-    antes = _respaldos(args)
-    dest = library.relabel(e.path, args.caracter, args.calib_paths.templates)
+    (e,) = _entry_paths(args, [args.name])
+    before = _backups(args)
+    dest = library.relabel(e.path, args.char, args.calib_paths.templates)
     print(f"{e.path.name} -> {dest.name}")
-    print(_linea_respaldo(args, antes))
+    print(_backup_line(args, before))
     return 0
 
 
@@ -343,10 +347,10 @@ def cmd_lib_clear(args: argparse.Namespace) -> int:
     if not args.yes:
         raise ValueError("lib clear borra TODAS las plantillas de la biblioteca compartida "
                          "(se respalda antes). Confirmalo con: python -m spectro teach lib clear --yes")
-    antes = _respaldos(args)
+    before = _backups(args)
     n = library.clear(args.calib_paths.templates)
     print(f"{n} plantillas borradas de {args.calib_paths.templates}")
-    print(_linea_respaldo(args, antes))
+    print(_backup_line(args, before))
     return 0
 
 
@@ -355,13 +359,13 @@ def cmd_lib_backups(args: argparse.Namespace) -> int:
 
     _guard(args)
     tdir = args.calib_paths.templates
-    nombres = library.list_backups(tdir)
+    names = library.list_backups(tdir)
     print(f"== respaldos de la biblioteca ({library.backups_root(tdir)}) ==")
-    if not nombres:
+    if not names:
         print("  (ninguno)")
-    for n in nombres:
-        cant = len(list((library.backups_root(tdir) / n).glob("*.png")))
-        print(f"  {n}   {cant} plantillas")
+    for n in names:
+        n_files = len(list((library.backups_root(tdir) / n).glob("*.png")))
+        print(f"  {n}   {n_files} plantillas")
     return 0
 
 
@@ -369,13 +373,13 @@ def cmd_lib_restore(args: argparse.Namespace) -> int:
     from . import library
 
     _guard(args)
-    antes = set(library.list_backups(args.calib_paths.templates))
-    nombre = library.restore_backup(args.calib_paths.templates, args.nombre)
-    print(f"biblioteca restaurada desde el respaldo {nombre} "
+    before = set(library.list_backups(args.calib_paths.templates))
+    name = library.restore_backup(args.calib_paths.templates, args.name)
+    print(f"biblioteca restaurada desde el respaldo {name} "
           f"({args.calib_paths.n_templates()} plantillas)")
-    nuevos = sorted(set(library.list_backups(args.calib_paths.templates)) - antes)
-    if nuevos:
-        print(f"  el estado anterior quedo respaldado como {nuevos[-1]}")
+    new_backups = sorted(set(library.list_backups(args.calib_paths.templates)) - before)
+    if new_backups:
+        print(f"  el estado anterior quedo respaldado como {new_backups[-1]}")
     return 0
 
 
@@ -388,11 +392,11 @@ def _train(args: argparse.Namespace, build: bool) -> int:
     from .sampling import leakage
 
     _guard(args)
-    excluir = list(args.exclude or [])
+    exclude = list(args.exclude or [])
     if args.runs:
         ctxs = []
         for r in dict.fromkeys(args.runs):
-            if r in excluir:
+            if r in exclude:
                 continue
             ctx = _load(args, r)
             if not ctx.train:
@@ -400,51 +404,51 @@ def _train(args: argparse.Namespace, build: bool) -> int:
                                  f"Etiqueta algunas con: python -m spectro teach samples label {r}")
             ctxs.append(ctx)
     else:
-        ctxs = T.gather_runs(args.runs_dir, args.calib_dir, excluir)
+        ctxs = T.gather_runs(args.runs_dir, args.calib_dir, exclude)
     if not ctxs:
         raise ValueError(f"Ninguna corrida de {args.runs_dir}/ tiene muestras de entrenamiento. "
                          "Etiqueta algunas con: python -m spectro teach samples label <id>")
 
     tdir = args.calib_paths.templates
-    antes = set(library.list_backups(tdir))
+    before = set(library.list_backups(tdir))
     print(f"== teach {'train' if build else 'check'} ==")
     for c in ctxs:
         print(f"  {c.run_id:22s} {len(c.train):3d} muestras de entrenamiento")
-    if excluir:
-        print(f"  excluidas (quedan como prueba): {', '.join(excluir)}")
+    if exclude:
+        print(f"  excluidas (quedan como prueba): {', '.join(exclude)}")
     res = T.train(ctxs, tdir, build=build, keep=getattr(args, "keep", False),
                   max_per_label=getattr(args, "max_per_label", DEFAULT_MAX_PER_LABEL))
-    for e in res.errores:
+    for e in res.errors:
         print(f"  muestra descartada: {e}")
     if not res.datas:
         raise ValueError("Ninguna muestra se pudo procesar.")
     print("  cobertura: " + _fmt_counts(res.coverage))
-    if res.faltan:
-        print(f"  aviso: faltan ejemplos de {', '.join(res.faltan)}; esos caracteres no se van a leer")
-    if res.nuevas is not None:
-        print(f"  {sum(res.nuevas.values())} plantillas escritas en {tdir}  "
-              f"({', '.join(f'{k}:{v}' for k, v in sorted(res.nuevas.items()))})")
-        nuevos = sorted(set(library.list_backups(tdir)) - antes)
-        if nuevos:
-            print(f"  respaldo de la biblioteca anterior: {nuevos[-1]}")
-    if res.aviso_signo:
-        print("  " + res.aviso_signo.replace("\n", "\n  "))
+    if res.missing:
+        print(f"  aviso: faltan ejemplos de {', '.join(res.missing)}; esos caracteres no se van a leer")
+    if res.added is not None:
+        print(f"  {sum(res.added.values())} plantillas escritas en {tdir}  "
+              f"({', '.join(f'{k}:{v}' for k, v in sorted(res.added.items()))})")
+        new_backups = sorted(set(library.list_backups(tdir)) - before)
+        if new_backups:
+            print(f"  respaldo de la biblioteca anterior: {new_backups[-1]}")
+    if res.sign_warning:
+        print("  " + res.sign_warning.replace("\n", "\n  "))
 
     print("  " + T.format_report(res.loo, "leave-one-out sobre todas las muestras")[0])
     for line in T.format_report(res.loo, "")[1:]:
         print("  " + line)
-    if res.vigente is None:
+    if res.current is None:
         print("  no hay biblioteca vigente todavia")
     print(f"  {'corrida':22s} {'leave-one-out':>14s} {'biblioteca vigente':>20s}")
     for c in ctxs:
         a = T.split_by_run(res.loo, c.run_id)
-        b = T.split_by_run(res.vigente, c.run_id) if res.vigente else None
+        b = T.split_by_run(res.current, c.run_id) if res.current else None
         print(f"  {c.run_id:22s} {a.exact:>6d}/{a.total:<7d} "
               f"{(str(b.exact) + '/' + str(b.total)) if b else '-':>20s}")
         T.write_report(a, c.paths.teach_report)
-        solapadas = leakage(c.train, c.test, args.gap)
-        if solapadas:
-            print(f"    aviso: {len(solapadas)} fotogramas de prueba de {c.run_id} estan a menos de "
+        overlapping = leakage(c.train, c.test, args.gap)
+        if overlapping:
+            print(f"    aviso: {len(overlapping)} fotogramas de prueba de {c.run_id} estan a menos de "
                   f"{args.gap:g} s de uno de entrenamiento")
     print("  informes por corrida: runs/<id>/out/teach_report.csv")
     print("  las pruebas (test.csv) no se usaron; para medirlas: python -m spectro teach test eval")
@@ -462,14 +466,17 @@ def cmd_check(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 # samples / test: los dos conjuntos son simetricos (args.which = "train" | "test")
 # --------------------------------------------------------------------------
-_NOMBRE_SET = {"train": "entrenamiento", "test": "prueba"}
+#: Semilla de las sugerencias cuando no se pasa ``--seed`` (reproducibles por omision).
+DEFAULT_SUGGEST_SEED = 0
+
+_SET_NAME = {"train": "entrenamiento", "test": "prueba"}
 
 
-def _muestras(ctx: RunContext, which: str) -> list:
+def _samples(ctx: RunContext, which: str) -> list:
     return ctx.train if which == "train" else ctx.test
 
 
-def _archivo_set(ctx: RunContext, which: str) -> Path:
+def _file_set(ctx: RunContext, which: str) -> Path:
     return ctx.paths.truth if which == "train" else ctx.paths.test
 
 
@@ -480,35 +487,35 @@ def cmd_set_list(args: argparse.Namespace) -> int:
     _guard(args)
     which = args.which
     if args.run_id is None:
-        print(f"== muestras de {_NOMBRE_SET[which]} por corrida ==")
+        print(f"== muestras de {_SET_NAME[which]} por corrida ==")
         print(f"  {'corrida':22s} {'muestras':>8s} {'valores':>8s}  caracteres sin cubrir")
         for r in _run_ids(args):
             run = _run_paths(args, r)
             cfg = Config.load(run.config)
-            muestras = T.load_truth(run.truth if which == "train" else run.test)
-            cov = T.coverage(muestras, cfg.digits)
+            samples = T.load_truth(run.truth if which == "train" else run.test)
+            cov = T.coverage(samples, cfg.digits)
             sin = [c for c in sorted(cfg.digits.required_chars()) if not cov.get(c)]
-            print(f"  {r:22s} {len(muestras):8d} {len({m.valor for m in muestras}):8d}  "
+            print(f"  {r:22s} {len(samples):8d} {len({m.value for m in samples}):8d}  "
                   f"{' '.join(repr(c) for c in sin) if sin else 'ninguno'}")
         return 0
 
     ctx = _load(args, args.run_id)
-    muestras = sorted(_muestras(ctx, which), key=lambda s: s.archivo)
-    print(f"== {len(muestras)} muestras de {_NOMBRE_SET[which]} de {args.run_id} "
-          f"({_archivo_set(ctx, which)}) ==")
-    for s in muestras:
-        print(f"  {s.archivo}   t={time_from_name(s.archivo):8.2f} s   {s.valor}")
-    print("  cobertura: " + _fmt_counts(T.coverage(muestras, ctx.cfg.digits)))
+    samples = sorted(_samples(ctx, which), key=lambda s: s.file)
+    print(f"== {len(samples)} muestras de {_SET_NAME[which]} de {args.run_id} "
+          f"({_file_set(ctx, which)}) ==")
+    for s in samples:
+        print(f"  {s.file}   t={time_from_name(s.file):8.2f} s   {s.value}")
+    print("  cobertura: " + _fmt_counts(T.coverage(samples, ctx.cfg.digits)))
     lib = library_or_empty(args)
-    if not muestras:
+    if not samples:
         print("  (sin muestras)")
     elif not lib:
         print("  biblioteca vigente: no hay plantillas todavia (teach train)")
     else:
-        _, datas, errores = T.build_pool(muestras, ctx.cfg, ctx.frames_dir, ctx.offsets)
+        _, datas, errors = T.build_pool(samples, ctx.cfg, ctx.frames_dir, ctx.offsets)
         rep = T.evaluate_library(datas, lib, ctx.cfg)
         print(f"  la biblioteca vigente lee bien {rep.exact}/{rep.total} de estas muestras")
-        for e in errores:
+        for e in errors:
             print(f"  muestra descartada: {e}")
     return 0
 
@@ -523,20 +530,20 @@ def cmd_set_add(args: argparse.Namespace) -> int:
     train0, test0 = list(ctx.train), list(ctx.test)
     train, test = list(train0), list(test0)
     for item in args.items:
-        archivo, sep, valor = item.partition("=")
-        if not sep or not valor:
+        file, sep, value = item.partition("=")
+        if not sep or not value:
             raise ValueError(f"se espera ARCHIVO=VALOR, recibi {item!r}")
-        if not (ctx.frames_dir / archivo).exists():
-            raise FileNotFoundError(f"No existe el fotograma {ctx.frames_dir / archivo}")
-        valor = T.parse_value(valor, ctx.cfg.digits)  # falla con el formato esperado
-        ya_entreno = which == "test" and any(x.archivo == archivo for x in train)
-        ya_prueba = which == "train" and any(x.archivo == archivo for x in test)
-        train, test = assign(train, test, T.Sample(archivo, valor), which)
-        if ya_entreno:
-            print(f"  aviso: {archivo} estaba en entrenamiento y ya aporto glifos a la biblioteca; "
+        if not (ctx.frames_dir / file).exists():
+            raise FileNotFoundError(f"No existe el fotograma {ctx.frames_dir / file}")
+        value = T.parse_value(value, ctx.cfg.digits)  # falla con el formato esperado
+        already_trained = which == "test" and any(x.file == file for x in train)
+        already_test = which == "train" and any(x.file == file for x in test)
+        train, test = assign(train, test, T.Sample(file, value), which)
+        if already_trained:
+            print(f"  aviso: {file} estaba en entrenamiento y ya aporto glifos a la biblioteca; "
                   "para una prueba limpia reconstruila: python -m spectro teach train")
-        if ya_prueba:
-            print(f"  aviso: {archivo} estaba en la prueba y paso a entrenamiento")
+        if already_test:
+            print(f"  aviso: {file} estaba en la prueba y paso a entrenamiento")
     if train != train0:
         T.save_truth(ctx.paths.truth, train)
     if test != test0:
@@ -552,18 +559,18 @@ def cmd_set_remove(args: argparse.Namespace) -> int:
     _guard(args)
     which = args.which
     ctx = _load(args, args.run_id)
-    muestras = _muestras(ctx, which)
-    estan = {s.archivo for s in muestras}
-    for a in args.archivos:
-        if a not in estan:
-            print(f"  aviso: {a} no esta en las muestras de {_NOMBRE_SET[which]}")
-    quitar = set(args.archivos) & estan
-    if not quitar:
-        raise ValueError(f"Ninguno de esos fotogramas esta en {_archivo_set(ctx, which)}")
-    quedan = [s for s in muestras if s.archivo not in quitar]
-    T.save_truth(_archivo_set(ctx, which), quedan)
-    print(f"{len(quitar)} muestras quitadas; quedan {len(quedan)} de {_NOMBRE_SET[which]} "
-          f"en {_archivo_set(ctx, which)}")
+    samples = _samples(ctx, which)
+    present_files = {s.file for s in samples}
+    for a in args.files:
+        if a not in present_files:
+            print(f"  aviso: {a} no esta en las muestras de {_SET_NAME[which]}")
+    to_remove = set(args.files) & present_files
+    if not to_remove:
+        raise ValueError(f"Ninguno de esos fotogramas esta en {_file_set(ctx, which)}")
+    remaining = [s for s in samples if s.file not in to_remove]
+    T.save_truth(_file_set(ctx, which), remaining)
+    print(f"{len(to_remove)} muestras quitadas; quedan {len(remaining)} de {_SET_NAME[which]} "
+          f"en {_file_set(ctx, which)}")
     return 0
 
 
@@ -577,19 +584,19 @@ def _suggestions(args: argparse.Namespace, ctx: RunContext, n: int):
     from . import sampling as S
     from .extract import time_from_name
 
-    para_prueba = args.which == "test"
-    strategy = "random" if para_prueba else args.strategy
-    otro = ctx.train if para_prueba else ctx.test
-    avoid = [time_from_name(x.archivo) for x in otro]
-    exclude = {x.archivo for x in ctx.train + ctx.test}
+    for_test = args.which == "test"
+    strategy = "random" if for_test else args.strategy
+    other = ctx.train if for_test else ctx.test
+    avoid = [time_from_name(x.file) for x in other]
+    exclude = {x.file for x in ctx.train + ctx.test}
     run = ctx.paths
-    lecturas, stale = None, False
+    reads, stale = None, False
     if strategy in ("mixed", "uncertain") and run.readings.exists():
-        lecturas = read.load_readings(run.readings)
+        reads = read.load_readings(run.readings)
         stale = (S.readings_stale(run.readings, ctx.templates_dir, run.config)
-                 or read.outputs_state(run.readings, ctx.templates_dir) == read.DESACTUALIZADAS)
-    return S.suggest(strategy, items=ctx.items(), readings=lecturas, cfg=ctx.cfg,
-                     exclude=exclude, n=n, seed=args.seed, gap_s=args.gap,
+                 or read.outputs_state(run.readings, ctx.templates_dir) == read.STALE)
+    return S.suggest(strategy, items=ctx.items(), readings=reads, cfg=ctx.cfg,
+                     exclude=exclude, n=n, seed=DEFAULT_SUGGEST_SEED if args.seed is None else args.seed, gap_s=args.gap,
                      avoid_times=avoid, stale=stale)
 
 
@@ -597,43 +604,38 @@ def cmd_set_suggest(args: argparse.Namespace) -> int:
     _guard(args)
     which = args.which
     ctx = _load(args, args.run_id)
-    sug, avisos = _suggestions(args, ctx, args.n)
-    usada = "random" if which == "test" else args.strategy
-    print(f"== teach: {len(sug)} fotogramas sugeridos para {_NOMBRE_SET[which]} de {args.run_id} "
-          f"(estrategia {usada}) ==")
-    for a in avisos:
+    sug, warnings = _suggestions(args, ctx, args.n)
+    used = "random" if which == "test" else args.strategy
+    print(f"== teach: {len(sug)} fotogramas sugeridos para {_SET_NAME[which]} de {args.run_id} "
+          f"(estrategia {used}) ==")
+    for a in warnings:
         print(f"  aviso: {a}")
     for sg in sug:
-        print(f"  {sg.archivo}   t={sg.t_s:8.2f} s   {sg.motivo}")
+        print(f"  {sg.file}   t={sg.t_s:8.2f} s   {sg.reason}")
     area = "samples" if which == "train" else "test"
     print(f"  para cargarlos: python -m spectro teach {area} label {args.run_id} --queue {args.n}")
     return 0
 
 
 def cmd_set_label(args: argparse.Namespace) -> int:
+    from .teach_session import TeachParams
     from .teach_ui import run_teach_ui
 
     _guard(args)
     which = args.which
     ctx = _load(args, args.run_id)
-    names, motivos = ctx.names(), {}
+    names, reasons = ctx.names(), {}
     if args.queue:
-        sug, avisos = _suggestions(args, ctx, args.queue)
-        for a in avisos:
+        sug, warnings = _suggestions(args, ctx, args.queue)
+        for a in warnings:
             print(f"aviso: {a}")
         if not sug:
             raise ValueError("No hay fotogramas que sugerir (todo esta etiquetado o excluido).")
-        names = [sg.archivo for sg in sug]
-        motivos = {sg.archivo: sg.motivo for sg in sug}
-    run = ctx.paths
-    ui_args = argparse.Namespace(
-        frames_dir=str(ctx.frames_dir), templates_dir=str(ctx.templates_dir),
-        max_per_label=args.max_per_label, gap=args.gap, truth=str(run.truth), test=str(run.test),
-        teach_report=str(run.teach_report), test_report=str(run.test_report),
-        history=str(run.history),
-    )
+        names = [sg.file for sg in sug]
+        reasons = {sg.file: sg.reason for sg in sug}
+    ui_args = TeachParams.from_context(ctx, args.max_per_label, args.gap, args.seed)
     return run_teach_ui(ctx.cfg, ui_args, names, ctx.offsets, ctx.train, test=ctx.test,
-                        motivos=motivos, target=which)
+                        reasons=reasons, target=which)
 
 
 # --------------------------------------------------------------------------
@@ -651,8 +653,8 @@ def cmd_test_eval(args: argparse.Namespace) -> int:
     _guard(args)
     calib = args.calib_paths
     lib = library.load(calib.templates)  # sin biblioteca: el error dice que correr
-    huella = library.fingerprint(calib.templates)
-    acc = acceptance_for(calib.config, args.min_exactitud, args.max_error, args.min_cobertura)
+    fingerprint = library.fingerprint(calib.templates)
+    acc = acceptance_for(calib.config, args.min_accuracy, args.max_error, args.min_coverage)
 
     if len(args.runs) == 1:
         ctx = _load(args, args.runs[0])
@@ -666,11 +668,11 @@ def cmd_test_eval(args: argparse.Namespace) -> int:
         for line in format_test_report(rep):
             print("  " + line)
         write_test_report(rep, run.test_report)
-        append_history(run.history, rep, huella=huella)
+        append_history(run.history, rep, fingerprint=fingerprint)
         print(f"  informe: {run.test_report}   historial: {run.history}")
-        entrada = load_run_input(run, calib, lib, evaluar=False, huella=huella)
-        entrada.prueba = rep
-        for line in format_batch_table(batch_summary([entrada], acc)):
+        run_input = load_run_input(run, calib, lib, with_eval=False, fingerprint=fingerprint)
+        run_input.test = rep
+        for line in format_batch_table(batch_summary([run_input], acc)):
             print(line)
         return 0
 
@@ -680,9 +682,9 @@ def cmd_test_eval(args: argparse.Namespace) -> int:
     if not ids:
         print("  ninguna corrida tiene test.csv. Arma uno con: python -m spectro teach test suggest <id> 20")
         return 0
-    entradas = [load_run_input(require_run(r, args.runs_dir, args.calib_dir), calib, lib,
-                               gap_s=args.gap, huella=huella) for r in ids]
-    for line in format_batch_table(batch_summary(entradas, acc)):
+    entries = [load_run_input(require_run(r, args.runs_dir, args.calib_dir), calib, lib,
+                               gap_s=args.gap, fingerprint=fingerprint) for r in ids]
+    for line in format_batch_table(batch_summary(entries, acc)):
         print(line)
     print("  detalle de una corrida: python -m spectro teach test eval <id>")
     return 0
@@ -693,22 +695,22 @@ def cmd_test_history(args: argparse.Namespace) -> int:
 
     _guard(args)
     run = require_run(args.run_id, args.runs_dir, args.calib_dir)
-    filas = load_history(run.history)
+    rows = load_history(run.history)
     print(f"== historial de evaluaciones de {run.id} ({run.history}) ==")
-    if not filas:
+    if not rows:
         print(f"  (vacio) corre: python -m spectro teach test eval {run.id}")
         return 0
     print(f"  {'fecha':19s} {'tipo':14s} {'plant.':>6s} {'entren.':>7s} {'prueba':>6s} "
           f"{'correctas':>9s} {'erroneas':>8s} {'descart.':>8s} {'exact.':>7s} {'error':>6s} "
           f"{'cobert.':>8s}  cambio")
-    previa = None
-    for f in filas:
-        ex = float(f["exactitud"])
-        cambio = "" if previa is None else f"{100 * (ex - previa):+.1f} pt"
-        print(f"  {f['fecha']:19s} {f['tipo']:14s} {f['plantillas']:>6s} {f['entrenamiento']:>7s} "
-              f"{f['prueba']:>6s} {f['correctas']:>9s} {f['erroneas']:>8s} {f['descartadas']:>8s} "
-              f"{ex:7.1%} {float(f['error_aceptadas']):6.1%} {float(f['cobertura']):8.1%}  {cambio}")
-        previa = ex
+    prior = None
+    for f in rows:
+        ex = float(f["accuracy"])
+        change = "" if prior is None else f"{100 * (ex - prior):+.1f} pt"
+        print(f"  {f['date']:19s} {f['kind']:14s} {f['templates']:>6s} {f['training']:>7s} "
+              f"{f['test']:>6s} {f['correct']:>9s} {f['wrong']:>8s} {f['discarded']:>8s} "
+              f"{ex:7.1%} {float(f['accepted_error']):6.1%} {float(f['coverage']):8.1%}  {change}")
+        prior = ex
     return 0
 
 
@@ -719,89 +721,89 @@ def register(sub, layout: argparse.ArgumentParser) -> None:
     """Registra ``teach`` y su arbol de areas y verbos en el parser principal."""
     fmt = argparse.ArgumentDefaultsHelpFormatter
 
-    def hoja(grupo, nombre, func, ayuda, **defaults):
-        p = grupo.add_parser(nombre, help=ayuda, description=ayuda, parents=[layout],
+    def leaf(group, name, func, help_text, **defaults):
+        p = group.add_parser(name, help=help_text, description=help_text, parents=[layout],
                              formatter_class=fmt)
         p.set_defaults(func=func, needs_paths=False, **defaults)
         return p
 
-    def area(nombre, ayuda, dest):
-        p = sub_teach.add_parser(nombre, help=ayuda, description=ayuda, parents=[layout],
+    def area(name, help_text, dest):
+        p = sub_teach.add_parser(name, help=help_text, description=help_text, parents=[layout],
                                  formatter_class=fmt)
         return p, p.add_subparsers(dest=dest, required=True, metavar="VERBO")
 
-    def run_arg(p, opcional=False):
-        p.add_argument("run_id", metavar="RUN", nargs="?" if opcional else None,
+    def run_arg(p, optional=False):
+        p.add_argument("run_id", metavar="RUN", nargs="?" if optional else None,
                        help="Id de la corrida, completo (ej. img_8102)")
 
     th = sub.add_parser(
         "teach", help="Biblioteca, muestras y pruebas del lector, por areas",
         description="Entrenar el lector con valores reales y medirlo. Se elige un area y un verbo.",
-        epilog=MIGRACION, parents=[layout], formatter_class=argparse.RawDescriptionHelpFormatter)
+        epilog=MIGRATION, parents=[layout], formatter_class=argparse.RawDescriptionHelpFormatter)
     sub_teach = th.add_subparsers(dest="area", required=True, metavar="AREA")
 
-    hoja(sub_teach, "status", cmd_status,
+    leaf(sub_teach, "status", cmd_status,
          "Panorama de la biblioteca y de cada corrida, y el siguiente paso")
 
     # -- lib
-    _, lib = area("lib", "La biblioteca global de plantillas (calib/templates), sin corrida", "verbo")
-    p = hoja(lib, "list", cmd_lib_list, "Plantillas por caracter y caracteres que faltan")
+    _, lib = area("lib", "La biblioteca global de plantillas (calib/templates), sin corrida", "verb")
+    p = leaf(lib, "list", cmd_lib_list, "Plantillas por caracter y caracteres que faltan")
     p.add_argument("--usage", action="store_true",
                    help="Medir cuantas celdas gana bien y mal cada plantilla sobre las muestras de todas las corridas")
-    p = hoja(lib, "delete", cmd_lib_delete, "Borrar plantillas por nombre (se respalda antes)")
-    p.add_argument("nombres", nargs="+", metavar="NOMBRE", help="Ej. 0_3 5_1")
-    p = hoja(lib, "relabel", cmd_lib_relabel, "Cambiar la etiqueta de una plantilla (se respalda antes)")
-    p.add_argument("nombre", metavar="NOMBRE", help="Ej. 0_3")
-    p.add_argument("caracter", metavar="CARACTER", help="Uno de 0123456789.-")
-    p = hoja(lib, "clear", cmd_lib_clear, "Vaciar la biblioteca (se respalda antes)")
+    p = leaf(lib, "delete", cmd_lib_delete, "Borrar plantillas por nombre (se respalda antes)")
+    p.add_argument("names", nargs="+", metavar="NOMBRE", help="Ej. 0_3 5_1")
+    p = leaf(lib, "relabel", cmd_lib_relabel, "Cambiar la etiqueta de una plantilla (se respalda antes)")
+    p.add_argument("name", metavar="NOMBRE", help="Ej. 0_3")
+    p.add_argument("char", metavar="CARACTER", help="Uno de 0123456789.-")
+    p = leaf(lib, "clear", cmd_lib_clear, "Vaciar la biblioteca (se respalda antes)")
     p.add_argument("--yes", action="store_true", help="Confirmar el borrado")
-    hoja(lib, "backups", cmd_lib_backups, "Listar los respaldos (se conservan los ultimos 5)")
-    p = hoja(lib, "restore", cmd_lib_restore,
+    leaf(lib, "backups", cmd_lib_backups, "Listar los respaldos (se conservan los ultimos 5)")
+    p = leaf(lib, "restore", cmd_lib_restore,
              "Volver a un respaldo (el ultimo, o NOMBRE); respalda antes el estado actual")
-    p.add_argument("nombre", metavar="NOMBRE", nargs="?", help="Nombre del respaldo (ver lib backups)")
+    p.add_argument("name", metavar="NOMBRE", nargs="?", help="Nombre del respaldo (ver lib backups)")
 
     # -- train / check
-    for nombre, func, ayuda in (
+    for name, func, help_text in (
         ("train", cmd_train, "Arma la biblioteca global con las muestras de entrenamiento (respalda la anterior)"),
         ("check", cmd_check, "Valida las muestras (leave-one-out) sin tocar la biblioteca"),
     ):
-        p = hoja(sub_teach, nombre, func, ayuda)
+        p = leaf(sub_teach, name, func, help_text)
         p.add_argument("runs", nargs="*", metavar="RUN",
                        help="Corridas a usar (default: todas las que tengan truth.csv)")
         p.add_argument("--exclude", nargs="+", metavar="RUN",
                        help="Corridas que no se usan para entrenar (hold-out por video)")
         p.add_argument("--gap", type=float, default=5.0, metavar="SEGUNDOS",
                        help="Avisar si una prueba esta a menos de esto de un fotograma de entrenamiento")
-        if nombre == "train":
+        if name == "train":
             p.add_argument("--keep", action="store_true",
                            help="Sumar a las plantillas existentes (sin duplicar) en vez de reemplazarlas")
             p.add_argument("--max-per-label", type=int, default=DEFAULT_MAX_PER_LABEL,
                            help="Maximo de variantes de plantilla por caracter")
 
     # -- samples y test
-    for nombre, which, ayuda in (
+    for name, which, help_text in (
         ("samples", "train", "Muestras de ENTRENAMIENTO de una corrida (runs/<id>/truth.csv)"),
         ("test", "test", "PRUEBAS de una corrida (runs/<id>/test.csv): nunca entran a la biblioteca"),
     ):
-        _, g = area(nombre, ayuda, "verbo")
+        _, g = area(name, help_text, "verb")
         d = {"which": which}
-        p = hoja(g, "list", cmd_set_list, "Sin corrida, una tabla de todas; con corrida, sus muestras", **d)
-        run_arg(p, opcional=True)
-        p = hoja(g, "add", cmd_set_add,
+        p = leaf(g, "list", cmd_set_list, "Sin corrida, una tabla de todas; con corrida, sus muestras", **d)
+        run_arg(p, optional=True)
+        p = leaf(g, "add", cmd_set_add,
                  "Agregar muestras; un fotograma esta en un solo conjunto (la saca del otro)", **d)
         run_arg(p)
         p.add_argument("items", nargs="+", metavar="ARCHIVO=VALOR", help="Ej. t_0001352.000.jpg=-0.018")
-        p = hoja(g, "remove", cmd_set_remove, "Quitar muestras", **d)
+        p = leaf(g, "remove", cmd_set_remove, "Quitar muestras", **d)
         run_arg(p)
-        p.add_argument("archivos", nargs="+", metavar="ARCHIVO", help="Ej. t_0001352.000.jpg")
+        p.add_argument("files", nargs="+", metavar="ARCHIVO", help="Ej. t_0001352.000.jpg")
         d2 = d if which == "train" else {**d, "strategy": "random"}
-        p = hoja(g, "suggest", cmd_set_suggest,
+        p = leaf(g, "suggest", cmd_set_suggest,
                  "Imprimir fotogramas para etiquetar" + ("" if which == "train" else
                                                           " (siempre al azar y lejos del entrenamiento)"),
                  **d2)
         run_arg(p)
         p.add_argument("n", metavar="N", nargs="?", type=int, default=20, help="Cuantos fotogramas")
-        p2 = hoja(g, "label", cmd_set_label,
+        p2 = leaf(g, "label", cmd_set_label,
                   "Abrir la ventana para etiquetar (conjunto activo: "
                   + ("Entrenam.)" if which == "train" else "Prueba)"), **d2)
         run_arg(p2)
@@ -814,20 +816,22 @@ def register(sub, layout: argparse.ArgumentParser) -> None:
                 q.add_argument("--strategy", choices=["mixed", "uncertain", "random", "uniform"],
                                default="mixed",
                                help="mixed = mitad incertidumbre, mitad azar")
-            q.add_argument("--seed", type=int, default=0, help="Semilla del muestreo al azar")
+            q.add_argument("--seed", type=int, default=None,
+                           help="Semilla del muestreo al azar y del boton Aleatorio "
+                                "(sin ella: sugerencias con semilla 0 y Aleatorio no determinista)")
             q.add_argument("--gap", type=float, default=5.0, metavar="SEGUNDOS",
                            help="Separacion minima entre fotogramas elegidos, y entre prueba y entrenamiento")
         if which == "test":
-            p = hoja(g, "eval", cmd_test_eval,
+            p = leaf(g, "eval", cmd_test_eval,
                      "Evaluar con la biblioteca vigente: una corrida da el informe; varias o ninguna, una tabla")
             p.add_argument("runs", nargs="*", metavar="RUN",
                            help="Corridas (default: todas las que tengan test.csv)")
             p.add_argument("--gap", type=float, default=5.0, metavar="SEGUNDOS",
                            help="Avisar si una prueba esta a menos de esto de un fotograma de entrenamiento")
-            for flag, h in (("--min-exactitud", "exactitud minima"),
+            for flag, h in (("--min-accuracy", "exactitud minima"),
                             ("--max-error", "error maximo entre las aceptadas"),
-                            ("--min-cobertura", "cobertura minima")):
+                            ("--min-coverage", "cobertura minima")):
                 p.add_argument(flag, type=float, default=None,
                                help=f"Veredicto: {h} (fraccion). Sin valor, 'acceptance' de calib/config.json")
-            p = hoja(g, "history", cmd_test_history, "La curva de aprendizaje: una fila por evaluacion")
+            p = leaf(g, "history", cmd_test_history, "La curva de aprendizaje: una fila por evaluacion")
             run_arg(p)

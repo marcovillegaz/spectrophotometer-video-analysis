@@ -56,15 +56,15 @@ def test_junta_las_muestras_de_todas_las_corridas_sin_pedir_run(proyecto, capsys
 def test_nombres_repetidos_entre_corridas_no_se_pisan_en_el_leave_one_out(proyecto, capsys):
     """r1 y r2 tienen `t_0000000.000.jpg` y el `3` solo aparece en esos dos primeros
     fotogramas: sin identificador por corrida, validar el de r1 descartaria tambien el `3`
-    de r2 y diria que "faltan" ejemplos."""
+    de r2 y diria que "missing" ejemplos."""
     p = proyecto
     cli(p, "train")
     salida = capsys.readouterr().out
     assert "sin ejemplos" not in salida
     with (p["r1"] / "out" / "teach_report.csv").open(encoding="utf-8") as fh:
         filas = list(csv.DictReader(fh))
-    assert [f["archivo"] for f in filas] == [f"t_{i * 10:07d}.000.jpg" for i in range(6)]  # sin prefijo
-    assert all(f["coincide"] == "1" for f in filas)
+    assert [f["file"] for f in filas] == [f"t_{i * 10:07d}.000.jpg" for i in range(6)]  # sin prefijo
+    assert all(f["matches"] == "1" for f in filas)
     assert (p["r2"] / "out" / "teach_report.csv").exists()
 
 
@@ -99,7 +99,7 @@ def test_la_prueba_nunca_entra(proyecto, monkeypatch):
     original = T.build_pool
 
     def espia(samples, *a, **k):
-        vistos.extend(s.archivo for s in samples)
+        vistos.extend(s.file for s in samples)
         return original(samples, *a, **k)
 
     monkeypatch.setattr(T, "build_pool", espia)

@@ -1,20 +1,20 @@
-"""Etapa 6: salidas -> ``absorbancia.csv``, ``preview.png``, ``contact_sheet.png``.
+"""Etapa 6: salidas -> ``absorbance.csv``, ``preview.png``, ``contact_sheet.png``.
 
-``absorbancia.csv`` lleva **solo las filas validas**: las descartadas no se
+``absorbance.csv`` lleva **solo las filas validas**: las descartadas no se
 interpolan ni se rellenan con ceros, quedan documentadas en ``qc_report.csv``.
 Un hueco en la serie es informacion honesta; un valor inventado, no.
 
-Columnas de ``absorbancia.csv``:
+Columnas de ``absorbance.csv``:
 
 | columna      | contenido                                                     |
 |--------------|---------------------------------------------------------------|
 | t_s          | segundos desde el inicio del video                            |
 | t_video      | hh:mm:ss.mmm, para volver al fotograma exacto                 |
 | t_exp        | t_s + time.offset_s -> alinea con el log manual del laboratorio|
-| absorbancia  | el valor leido                                                |
-| confianza    | NCC minima entre los slots (0-1)                              |
+| absorbance   | el valor leido                                                |
+| confidence   | NCC minima entre los slots (0-1)                              |
 | frame        | nombre del archivo, para trazabilidad                         |
-| hora         | ISO de reloj, solo si time.absolute_start esta definido       |
+| datetime     | ISO de reloj, solo si time.absolute_start esta definido       |
 
 Interfaz publica:
     run_report(cfg, ...) -> int         (cantidad de filas validas)
@@ -25,10 +25,10 @@ Interfaz publica:
     format_batch_table(rows) / write_batch_report(rows, path)
 
 ``batch_report.csv`` (una fila por corrida): fotogramas, descartes de qc por motivo
-(``qc_<motivo>``, incluido ``qc_roi_fuera``), ``ok`` / ``low_confidence`` / ``spike``,
+(``qc_<reason>``, incluido ``qc_roi_outside``), ``ok`` / ``low_confidence`` / ``spike``,
 cobertura (ok / fotogramas), prueba (tipo, n, exactitud, error entre aceptadas),
 plantillas, huella de la biblioteca, estado de las salidas y veredicto. El veredicto
-(``acepta`` / ``revisar``) solo existe si hay umbrales (``acceptance`` o flags).
+(``accept`` / ``review``) solo existe si hay umbrales (``acceptance`` o flags).
 """
 
 from __future__ import annotations
@@ -75,10 +75,10 @@ def write_absorbance_csv(
     start = _parse_absolute_start(cfg.time.absolute_start)
     # Tantos decimales como digitos haya despues del punto en el display: el CSV
     # sale con la misma precision que el instrumento, y 0 se escribe "0.000".
-    decimales = max(len(cfg.digits.digit_slots()) - cfg.digits.decimal_after, 0)
-    header = ["t_s", "t_video", "t_exp", "absorbancia", "confianza", "frame"]
+    decimals = max(len(cfg.digits.digit_slots()) - cfg.digits.decimal_after, 0)
+    header = ["t_s", "t_video", "t_exp", "absorbance", "confidence", "frame"]
     if start:
-        header.append("hora")
+        header.append("datetime")
     n = 0
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
@@ -90,9 +90,9 @@ def write_absorbance_csv(
                 f"{r.t_s:.3f}",
                 format_hhmmss(r.t_s),
                 f"{r.t_s + cfg.time.offset_s:.3f}",
-                f"{r.valor:.{decimales}f}",
-                f"{r.confianza:.4f}",
-                r.archivo,
+                f"{r.value:.{decimals}f}",
+                f"{r.confidence:.4f}",
+                r.file,
             ]
             if start:
                 row.append((start + timedelta(seconds=r.t_s)).isoformat(timespec="milliseconds"))
@@ -112,7 +112,7 @@ def plot_preview(readings, cfg: Config, path: Path | str) -> Path | None:
     if not valid:
         return None
     xs = [r.t_s + cfg.time.offset_s for r in valid]
-    ys = [r.valor for r in valid]
+    ys = [r.value for r in valid]
     fig, ax = plt.subplots(figsize=(11, 4.5), dpi=130)
     ax.plot(xs, ys, lw=1.0, color="#1f4e79")
     ax.scatter(xs, ys, s=3, color="#1f4e79", alpha=0.5)
@@ -136,15 +136,15 @@ def build_contact_sheet(
     """Mosaico con los recortes de menor confianza, para auditarlos a ojo."""
     frames_dir = Path(frames_dir)
     frames_roi = load_roi_sidecar(frames_dir)
-    peores = sorted((r for r in readings if r.valor is not None), key=lambda r: r.confianza)[:n]
+    worst = sorted((r for r in readings if r.value is not None), key=lambda r: r.confidence)[:n]
     tiles, labels = [], []
-    for r in peores:
-        frame = frames_dir / r.archivo
+    for r in worst:
+        frame = frames_dir / r.file
         if not frame.exists():
             continue
         crop = crop_for_reading(load_frame(frame, cfg, color=True), cfg, frames_roi, (r.dx, r.dy))
         tiles.append(cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST))
-        labels.append(f"{r.valor:.3f} c={r.confianza:.2f} {r.estado}")
+        labels.append(f"{r.value:.3f} c={r.confidence:.2f} {r.status}")
     if not tiles:
         return None
     path = Path(path)
@@ -158,12 +158,12 @@ def build_contact_sheet(
 # --------------------------------------------------------------------------
 #: Motivos por los que qc/read descartan un fotograma antes de leerlo, en el orden del reporte.
 QC_REASONS = ("dark", "blown", "blur", "low_contrast", "occluded", "blank", "camera_moved",
-              "roi_fuera")
+              "roi_outside")
 
 BATCH_REPORT_FIELDS = [
-    "corrida", "fotogramas", *[f"qc_{m}" for m in QC_REASONS], "ok", "low_confidence", "spike",
-    "cobertura", "tipo_prueba", "prueba", "exactitud", "error_aceptadas", "plantillas", "huella",
-    "salidas", "veredicto", "detalle",
+    "run", "frames", *[f"qc_{m}" for m in QC_REASONS], "ok", "low_confidence", "spike",
+    "coverage", "test_kind", "test", "accuracy", "accepted_error", "templates", "fingerprint",
+    "outputs", "verdict", "detail",
 ]
 
 
@@ -172,99 +172,99 @@ class RunInput:
     """Lo que ``batch_summary`` necesita de una corrida, ya leido del disco."""
 
     run_id: str
-    #: ``estado`` de cada fotograma extraido, de ``qc_report.csv`` (con el resultado de ``read``).
-    estados: list[str]
+    #: ``status`` de cada fotograma extraido, de ``qc_report.csv`` (con el resultado de ``read``).
+    statuses: list[str]
     #: Hay ``readings.csv``: si no, ``ok`` / ``low_confidence`` no significan nada todavia.
-    leido: bool = True
+    read_value: bool = True
     #: Evaluacion de ``test.csv`` con la biblioteca vigente, o ``None`` si no hay prueba.
-    prueba: object | None = None
-    plantillas: int = 0
-    huella: str = ""
-    #: ``read.outputs_state``: ``al_dia`` | ``desactualizadas`` | ``sin_huella`` | ``sin_lectura``.
-    salidas: str = ""
+    test: object | None = None
+    templates: int = 0
+    fingerprint: str = ""
+    #: ``read.outputs_state``: ``up_to_date`` | ``stale`` | ``no_fingerprint`` | ``no_reading``.
+    outputs: str = ""
 
 
 @dataclass
 class RunSummary:
     run_id: str
-    fotogramas: int
+    frames: int
     #: Fotogramas descartados antes de leer, por motivo (todos los de ``QC_REASONS``).
     qc: dict[str, int]
     ok: int | None
     low_confidence: int | None
     spike: int | None
-    cobertura: float | None
-    tipo_prueba: str = ""
-    prueba: int = 0
-    exactitud: float | None = None
-    error_aceptadas: float | None = None
-    plantillas: int = 0
-    huella: str = ""
-    salidas: str = ""
-    #: ``acepta`` / ``revisar``; vacio si no hay umbrales.
-    veredicto: str = ""
-    detalle: str = ""
+    coverage: float | None
+    test_kind: str = ""
+    test: int = 0
+    accuracy: float | None = None
+    accepted_error: float | None = None
+    templates: int = 0
+    fingerprint: str = ""
+    outputs: str = ""
+    #: ``accept`` / ``review``; vacio si no hay umbrales.
+    verdict: str = ""
+    detail: str = ""
 
     @property
-    def descartados_qc(self) -> int:
+    def discarded_qc(self) -> int:
         return sum(self.qc.values())
 
 
-def resolve_acceptance(base, min_exactitud=None, max_error=None, min_cobertura=None):
+def resolve_acceptance(base, min_accuracy=None, max_error=None, min_coverage=None):
     """Los umbrales de ``calib/config.json`` (``base``) con los flags encima: el flag gana."""
     from .config import AcceptanceConfig
 
-    for nombre, v in (("--min-exactitud", min_exactitud), ("--max-error", max_error),
-                      ("--min-cobertura", min_cobertura)):
+    for name, v in (("--min-accuracy", min_accuracy), ("--max-error", max_error),
+                      ("--min-coverage", min_coverage)):
         if v is not None and not 0.0 <= v <= 1.0:
-            raise ValueError(f"{nombre} es una fraccion entre 0 y 1 (ej. 0.95), no {v}")
+            raise ValueError(f"{name} es una fraccion entre 0 y 1 (ej. 0.95), no {v}")
     return AcceptanceConfig(
-        min_exactitud=min_exactitud if min_exactitud is not None else base.min_exactitud,
+        min_accuracy=min_accuracy if min_accuracy is not None else base.min_accuracy,
         max_error=max_error if max_error is not None else base.max_error,
-        min_cobertura=min_cobertura if min_cobertura is not None else base.min_cobertura,
+        min_coverage=min_coverage if min_coverage is not None else base.min_coverage,
     )
 
 
-def acceptance_for(calib_config, min_exactitud=None, max_error=None, min_cobertura=None):
+def acceptance_for(calib_config, min_accuracy=None, max_error=None, min_coverage=None):
     """Umbrales de ``calib/config.json`` (si existe) con los flags encima; valida los flags."""
     from .config import Config
 
     return resolve_acceptance(Config.load_or_default(calib_config).acceptance,
-                              min_exactitud, max_error, min_cobertura)
+                              min_accuracy, max_error, min_coverage)
 
 
-def _veredicto(s: RunSummary, acc) -> tuple[str, str]:
+def _verdict(s: RunSummary, acc) -> tuple[str, str]:
     """``(veredicto, detalle)``. Sin umbrales fijados no hay veredicto: no se inventan."""
     if not acc.is_set():
         return "", ""
-    razones: list[str] = []
-    sin_prueba = False
-    if acc.min_exactitud is not None:
-        if s.exactitud is None:
-            sin_prueba = True
-        elif s.exactitud < acc.min_exactitud:
-            razones.append(f"exactitud {s.exactitud:.1%} < {acc.min_exactitud:.1%}")
+    reasons: list[str] = []
+    no_test = False
+    if acc.min_accuracy is not None:
+        if s.accuracy is None:
+            no_test = True
+        elif s.accuracy < acc.min_accuracy:
+            reasons.append(f"exactitud {s.accuracy:.1%} < {acc.min_accuracy:.1%}")
     if acc.max_error is not None:
-        if s.error_aceptadas is None and s.prueba:
-            razones.append("la prueba no tiene lecturas aceptadas: no se puede medir el error")
-        elif s.error_aceptadas is None:
-            sin_prueba = True
-        elif s.error_aceptadas > acc.max_error:
-            razones.append(f"error {s.error_aceptadas:.1%} > {acc.max_error:.1%}")
-    if sin_prueba:
-        razones.append("sin prueba que lo verifique")
-    if acc.min_cobertura is not None:
-        if s.cobertura is None:
-            razones.append("sin lectura")
-        elif s.cobertura < acc.min_cobertura:
-            razones.append(f"cobertura {s.cobertura:.1%} < {acc.min_cobertura:.1%}")
-    if s.salidas == "desactualizadas":
-        razones.append("salidas anteriores a la biblioteca")
-    elif s.salidas == "sin_lectura":
-        razones.append("la corrida no tiene readings.csv")
-    elif s.salidas == "sin_huella":
-        razones.append("salidas sin huella (read_meta.json): no se sabe con que biblioteca se leyeron")
-    return ("revisar" if razones else "acepta"), "; ".join(razones)
+        if s.accepted_error is None and s.test:
+            reasons.append("la prueba no tiene lecturas aceptadas: no se puede medir el error")
+        elif s.accepted_error is None:
+            no_test = True
+        elif s.accepted_error > acc.max_error:
+            reasons.append(f"error {s.accepted_error:.1%} > {acc.max_error:.1%}")
+    if no_test:
+        reasons.append("sin prueba que lo verifique")
+    if acc.min_coverage is not None:
+        if s.coverage is None:
+            reasons.append("sin lectura")
+        elif s.coverage < acc.min_coverage:
+            reasons.append(f"cobertura {s.coverage:.1%} < {acc.min_coverage:.1%}")
+    if s.outputs == "stale":
+        reasons.append("salidas anteriores a la biblioteca")
+    elif s.outputs == "no_reading":
+        reasons.append("la corrida no tiene readings.csv")
+    elif s.outputs == "no_fingerprint":
+        reasons.append("salidas sin huella (read_meta.json): no se sabe con que biblioteca se leyeron")
+    return ("review" if reasons else "accept"), "; ".join(reasons)
 
 
 def batch_summary(runs: list[RunInput], acceptance=None) -> list[RunSummary]:
@@ -278,60 +278,60 @@ def batch_summary(runs: list[RunInput], acceptance=None) -> list[RunSummary]:
     acc = acceptance or AcceptanceConfig()
     out: list[RunSummary] = []
     for r in runs:
-        total = len(r.estados)
-        qc = {m: sum(1 for e in r.estados if e == m) for m in QC_REASONS}
-        if r.leido:
-            ok, low, spike = (sum(1 for e in r.estados if e == k)
+        total = len(r.statuses)
+        qc = {m: sum(1 for e in r.statuses if e == m) for m in QC_REASONS}
+        if r.read_value:
+            ok, low, spike = (sum(1 for e in r.statuses if e == k)
                               for k in ("ok", "low_confidence", "spike"))
-            cobertura = ok / total if total else 0.0
+            coverage = ok / total if total else 0.0
         else:
-            ok = low = spike = cobertura = None
-        s = RunSummary(r.run_id, total, qc, ok, low, spike, cobertura,
-                       plantillas=r.plantillas, huella=r.huella, salidas=r.salidas)
-        if r.prueba is not None and r.prueba.n:
-            s.tipo_prueba, s.prueba = r.prueba.tipo, r.prueba.n
-            s.exactitud = r.prueba.exactitud
-            s.error_aceptadas = r.prueba.error_aceptadas if r.prueba.aceptadas else None
-        s.veredicto, s.detalle = _veredicto(s, acc)
+            ok = low = spike = coverage = None
+        s = RunSummary(r.run_id, total, qc, ok, low, spike, coverage,
+                       templates=r.templates, fingerprint=r.fingerprint, outputs=r.outputs)
+        if r.test is not None and r.test.n:
+            s.test_kind, s.test = r.test.kind, r.test.n
+            s.accuracy = r.test.accuracy
+            s.accepted_error = r.test.accepted_error if r.test.accepted else None
+        s.verdict, s.detail = _verdict(s, acc)
         out.append(s)
     return out
 
 
 def load_run_input(
-    run, calib, library: list, evaluar: bool = True, gap_s: float = 5.0, huella: str | None = None
+    run, calib, library: list, with_eval: bool = True, gap_s: float = 5.0, fingerprint: str | None = None
 ) -> RunInput:
     """Arma el ``RunInput`` de una corrida desde sus archivos (sin releer los fotogramas).
 
     ``library`` es la biblioteca ya cargada (vacia si no hay); con ``evaluar`` mide
-    ``test.csv`` con ella, que es la unica parte que abre fotogramas. ``huella`` es la de
+    ``test.csv`` con ella, que es la unica parte que abre fotogramas. ``fingerprint`` es la de
     la biblioteca si quien llama ya la calculo. El resultado de la lectura sale de
-    ``readings.csv``, no de la columna ``estado`` de ``qc_report.csv``: si se re-corrio
+    ``readings.csv``, no de la columna ``status`` de ``qc_report.csv``: si se re-corrio
     ``qc`` sin ``read``, esa columna no dice nada de la lectura.
     """
     from .evaluation import evaluate_test
-    from .library import fingerprint
+    from .library import fingerprint as library_fingerprint
     from .project import RunContext
     from .read import outputs_state
 
-    huella = fingerprint(calib.templates) if huella is None else huella
+    fingerprint = library_fingerprint(calib.templates) if fingerprint is None else fingerprint
 
     from .read import load_readings
 
-    estado_lectura = ({r.archivo: r.estado for r in load_readings(run.readings)}
+    read_status = ({r.file: r.status for r in load_readings(run.readings)}
                       if run.readings.exists() else {})
-    estados = []
+    statuses = []
     for r in (load_qc_report(run.qc_report) if run.qc_report.exists() else []):
         # un descarte de qc se cuenta tal cual; el resto, por lo que dijo ``read``
-        estados.append(r.estado if r.estado in QC_REASONS
-                       else estado_lectura.get(r.archivo, "sin_leer"))
-    prueba = None
-    if evaluar and library:
+        statuses.append(r.status if r.status in QC_REASONS
+                       else read_status.get(r.file, "not_read"))
+    test = None
+    if with_eval and library:
         ctx = RunContext.load(run, calib)
         if ctx.test:
-            prueba = evaluate_test(ctx.test, ctx.cfg, ctx.frames_dir, ctx.offsets, library,
+            test = evaluate_test(ctx.test, ctx.cfg, ctx.frames_dir, ctx.offsets, library,
                                    ctx.train, gap_s)
-    return RunInput(run.id, estados, run.readings.exists(), prueba, len(library),
-                    huella, outputs_state(run.readings, calib.templates, huella))
+    return RunInput(run.id, statuses, run.readings.exists(), test, len(library),
+                    fingerprint, outputs_state(run.readings, calib.templates, fingerprint))
 
 
 def _pct(v: float | None, dec: int = 1) -> str:
@@ -340,19 +340,19 @@ def _pct(v: float | None, dec: int = 1) -> str:
 
 def format_batch_table(rows: list[RunSummary]) -> list[str]:
     """La tabla que imprimen ``batch`` y ``teach test eval`` (el detalle por motivo va al CSV)."""
-    cab = (f"  {'corrida':22s} {'fotog.':>6s} {'desc.qc':>7s} {'roi_fuera':>9s} {'ok':>6s} "
+    header = (f"  {'corrida':22s} {'fotog.':>6s} {'desc.qc':>7s} {'roi_outside':>11s} {'ok':>6s} "
            f"{'baja':>5s} {'spike':>5s} {'cobert.':>8s} {'prueba':>10s} {'exact.':>7s} "
            f"{'error':>6s} {'plant.':>6s} {'huella':>12s} {'salidas':>15s}  veredicto")
-    lines = [cab]
+    lines = [header]
     n = lambda v: "-" if v is None else str(v)  # noqa: E731
     for s in rows:
-        prueba = f"{s.prueba} {s.tipo_prueba.replace('misma_corrida', 'misma').replace('otro_video', 'otro')}" if s.prueba else "-"
-        ver = s.veredicto + (f" ({s.detalle})" if s.detalle else "")
+        test = f"{s.test} {s.test_kind.replace('same_run', 'misma').replace('other_video', 'otro')}" if s.test else "-"
+        verdict_text = s.verdict + (f" ({s.detail})" if s.detail else "")
         lines.append(
-            f"  {s.run_id:22s} {s.fotogramas:6d} {s.descartados_qc:7d} {s.qc['roi_fuera']:9d} "
-            f"{n(s.ok):>6s} {n(s.low_confidence):>5s} {n(s.spike):>5s} {_pct(s.cobertura):>8s} "
-            f"{prueba:>10s} {_pct(s.exactitud):>7s} {_pct(s.error_aceptadas):>6s} "
-            f"{s.plantillas:6d} {s.huella or '-':>12s} {s.salidas or '-':>15s}  {ver}".rstrip())
+            f"  {s.run_id:22s} {s.frames:6d} {s.discarded_qc:7d} {s.qc['roi_outside']:11d} "
+            f"{n(s.ok):>6s} {n(s.low_confidence):>5s} {n(s.spike):>5s} {_pct(s.coverage):>8s} "
+            f"{test:>10s} {_pct(s.accuracy):>7s} {_pct(s.accepted_error):>6s} "
+            f"{s.templates:6d} {s.fingerprint or '-':>12s} {s.outputs or '-':>15s}  {verdict_text}".rstrip())
     return lines
 
 
@@ -369,10 +369,10 @@ def write_batch_report(rows: list[RunSummary], path: Path | str) -> Path:
         w.writerow(BATCH_REPORT_FIELDS)
         for s in rows:
             w.writerow([
-                s.run_id, s.fotogramas, *[s.qc[m] for m in QC_REASONS],
-                f(s.ok, "{}"), f(s.low_confidence, "{}"), f(s.spike, "{}"), f(s.cobertura),
-                s.tipo_prueba, s.prueba or "", f(s.exactitud), f(s.error_aceptadas),
-                s.plantillas, s.huella, s.salidas, s.veredicto, s.detalle,
+                s.run_id, s.frames, *[s.qc[m] for m in QC_REASONS],
+                f(s.ok, "{}"), f(s.low_confidence, "{}"), f(s.spike, "{}"), f(s.coverage),
+                s.test_kind, s.test or "", f(s.accuracy), f(s.accepted_error),
+                s.templates, s.fingerprint, s.outputs, s.verdict, s.detail,
             ])
     return path
 
@@ -389,7 +389,7 @@ def run_report(
     """Genera el CSV final, el grafico y la hoja de contacto. Devuelve filas validas."""
     out_dir = Path(out_dir)
     readings = load_readings(readings_path)
-    csv_path = out_dir / "absorbancia.csv"
+    csv_path = out_dir / "absorbance.csv"
     n = write_absorbance_csv(readings, cfg, csv_path)
     if verbose:
         print(f"== report ==\n  {n} filas validas -> {csv_path}")
@@ -404,20 +404,20 @@ def run_report(
 
     # -- cuadre de conteos: que no se pierda ningun fotograma en silencio
     qc_rows = load_qc_report(qc_path)
-    descartados = sum(1 for r in qc_rows if r.estado != "ok")
+    discarded = sum(1 for r in qc_rows if r.status != "ok")
     if verbose:
-        estados: dict[str, int] = {}
+        statuses: dict[str, int] = {}
         for r in qc_rows:
-            estados[r.estado] = estados.get(r.estado, 0) + 1
-        print(f"\n  cuadre: {n} validas + {descartados} descartadas = {len(qc_rows)} extraidas", end="")
-        print("  [ok]" if n + descartados == len(qc_rows) else "  [NO CUADRA]")
-        for estado, count in sorted(estados.items(), key=lambda kv: -kv[1]):
-            print(f"    {estado:16s} {count}")
+            statuses[r.status] = statuses.get(r.status, 0) + 1
+        print(f"\n  cuadre: {n} validas + {discarded} descartadas = {len(qc_rows)} extraidas", end="")
+        print("  [ok]" if n + discarded == len(qc_rows) else "  [NO CUADRA]")
+        for status, count in sorted(statuses.items(), key=lambda kv: -kv[1]):
+            print(f"    {status:16s} {count}")
         valid = [r for r in readings if r.is_valid]
         if valid:
-            vals = [r.valor for r in valid]
+            vals = [r.value for r in valid]
             print(
                 f"  absorbancia: min {min(vals):.3f}  max {max(vals):.3f}  "
-                f"confianza minima {min(r.confianza for r in valid):.3f}"
+                f"confianza minima {min(r.confidence for r in valid):.3f}"
             )
     return n

@@ -71,11 +71,6 @@ def cfg() -> Config:
 
 
 @pytest.fixture
-def frame() -> np.ndarray:
-    return render_display("0.245")
-
-
-@pytest.fixture
 def library(cfg, tmp_path):
     """Biblioteca de plantillas construida desde el display sintetico."""
     from spectro.imaging import binarize, normalize_glyph, slot_boxes

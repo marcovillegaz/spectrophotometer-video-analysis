@@ -1,7 +1,7 @@
 """Caracterizacion (fase 0 del plan v5): fija el comportamiento ACTUAL antes de refactorizar.
 
 Estos tests no dicen que el comportamiento sea el ideal sino cual es hoy: si fallan tras
-tocar ``cli.py``, ``teach.py``, ``templates.py``, ``evaluation.py`` o ``read.py`` hay una
+tocar ``cli.py``, ``teach.py``, ``library.py``, ``evaluation.py`` o ``read.py`` hay una
 regresion (o un cambio deliberado que hay que documentar y re-fijar aca).
 
 Grupos:
@@ -134,8 +134,8 @@ def test_test_eval_escribe_informe_e_historial_con_cifras_clave(proyecto, capsys
     assert _contar(out / "test_report.csv") == 2
     filas = load_history(out / "teach_history.csv")
     assert len(filas) == 1 and list(filas[0]) == HISTORY_FIELDS
-    assert filas[0]["tipo"] == "misma_corrida" and filas[0]["prueba"] == "2"
-    assert float(filas[0]["exactitud"]) == 1.0
+    assert filas[0]["kind"] == "same_run" and filas[0]["test"] == "2"
+    assert float(filas[0]["accuracy"]) == 1.0
     teach(p, "test", "eval", "r1")
     assert len(load_history(out / "teach_history.csv")) == 2          # el historial acumula
 
@@ -227,7 +227,7 @@ def test_test_eval_sin_prueba_da_error_claro(proyecto, capsys):
 
 def test_test_eval_sin_biblioteca_da_error_claro(proyecto, capsys):
     assert teach(proyecto, "test", "eval", "r1") == 1
-    assert "plantillas" in capsys.readouterr().err
+    assert "templates" in capsys.readouterr().err
     assert not (proyecto["run"] / "out" / "teach_history.csv").exists()   # nada a medias
 
 
@@ -257,7 +257,7 @@ def lote(tmp_path, library, monkeypatch):
         for i, v in enumerate(VALORES_BATCH):
             nombre = f"t_{float(i):011.3f}.jpg"
             cv2.imwrite(str(output / nombre), render_display(v))
-            rows.append(FrameRow(archivo=nombre, t_s=float(i), indice=i + 1))
+            rows.append(FrameRow(file=nombre, t_s=float(i), index=i + 1))
         if index_path is not None:
             write_frames_index(rows, index_path)
         return rows
@@ -277,8 +277,8 @@ def test_batch_until_read_deja_lecturas_y_no_hace_el_informe(lote, capsys):
     assert _contar(run / "out" / "qc_report.csv") == 5
     with (run / "out" / "readings.csv").open(encoding="utf-8") as fh:
         filas = list(csv.DictReader(fh))
-    assert [float(f["valor"]) for f in filas] == pytest.approx([float(v) for v in VALORES_BATCH])
-    assert not (run / "out" / "absorbancia.csv").exists()
+    assert [float(f["value"]) for f in filas] == pytest.approx([float(v) for v in VALORES_BATCH])
+    assert not (run / "out" / "absorbance.csv").exists()
 
 
 def test_batch_completo_imprime_la_tabla_y_escribe_batch_report(lote, library, capsys):
@@ -287,18 +287,18 @@ def test_batch_completo_imprime_la_tabla_y_escribe_batch_report(lote, library, c
     salida = capsys.readouterr().out
     assert "== reporte del lote ==" in salida
     linea = next(x for x in salida.splitlines() if x.strip().startswith("demo"))
-    assert "100.0%" in linea and "al_dia" in linea
+    assert "100.0%" in linea and "up_to_date" in linea
     assert "sin umbrales de aceptacion" in salida            # el codigo no inventa umbrales
-    absorbancia = lote["runs"] / "demo" / "out" / "absorbancia.csv"
+    absorbancia = lote["runs"] / "demo" / "out" / "absorbance.csv"
     with absorbancia.open(encoding="utf-8") as fh:
-        valores = [float(f["absorbancia"]) for f in csv.DictReader(fh)]
+        valores = [float(f["absorbance"]) for f in csv.DictReader(fh)]
     assert valores == pytest.approx([float(v) for v in VALORES_BATCH])
     with (lote["runs"] / "batch_report.csv").open(encoding="utf-8") as fh:
         (fila,) = list(csv.DictReader(fh))
-    assert (fila["corrida"], fila["fotogramas"], fila["ok"]) == ("demo", "5", "5")
-    assert float(fila["cobertura"]) == 1.0 and fila["veredicto"] == ""
-    assert fila["salidas"] == "al_dia" and fila["huella"] == fingerprint(lote["calib"] / "templates")
-    assert int(fila["plantillas"]) == len(library)
+    assert (fila["run"], fila["frames"], fila["ok"]) == ("demo", "5", "5")
+    assert float(fila["coverage"]) == 1.0 and fila["verdict"] == ""
+    assert fila["outputs"] == "up_to_date" and fila["fingerprint"] == fingerprint(lote["calib"] / "templates")
+    assert int(fila["templates"]) == len(library)
 
 
 def test_batch_saltea_la_corrida_ya_hecha(lote, capsys):
@@ -324,25 +324,25 @@ def test_batch_until_invalido_lo_rechaza_el_parser_con_codigo_2(lote, capsys):
 def test_resumen_de_una_corrida_sin_qc_ni_lectura(tmp_path):
     """Rompe: que una corrida sin salidas cuente 0 ok / 0% de cobertura en vez de 'sin dato'."""
     run = RunPaths.for_run("x", runs_dir=tmp_path / "runs", calib_dir=tmp_path / "calib")
-    entrada = load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], evaluar=False)
-    assert entrada.estados == [] and not entrada.leido and entrada.salidas == "sin_lectura"
+    entrada = load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], with_eval=False)
+    assert entrada.statuses == [] and not entrada.read_value and entrada.outputs == "no_reading"
     (fila,) = batch_summary([entrada])
-    assert fila.fotogramas == 0 and fila.ok is None and fila.cobertura is None
+    assert fila.frames == 0 and fila.ok is None and fila.coverage is None
 
 
 def test_resumen_de_una_corrida_con_descartes_y_lecturas(tmp_path):
     """Rompe: el conteo de ok / descartes por motivo o la cobertura (ok / fotogramas extraidos)."""
     run = RunPaths.for_run("x", runs_dir=tmp_path / "runs", calib_dir=tmp_path / "calib")
     estados = ["ok", "ok", "ok", "dark"]
-    write_qc_report([QCRow(f"t_{i}.jpg", float(i), i + 1, estado=e) for i, e in enumerate(estados)],
+    write_qc_report([QCRow(f"t_{i}.jpg", float(i), i + 1, status=e) for i, e in enumerate(estados)],
                     run.qc_report)
     write_readings([Reading(f"t_{i}.jpg", float(i), i + 1, 0.1, 0.9, "0.100") for i in range(3)],
                    run.readings)
-    entrada = load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], evaluar=False)
-    assert entrada.estados == estados and entrada.leido
+    entrada = load_run_input(run, CalibPaths.at(tmp_path / "calib"), [], with_eval=False)
+    assert entrada.statuses == estados and entrada.read_value
     (fila,) = batch_summary([entrada])
-    assert (fila.fotogramas, fila.ok, fila.qc["dark"], fila.descartados_qc) == (4, 3, 1, 1)
-    assert fila.cobertura == pytest.approx(0.75)
+    assert (fila.frames, fila.ok, fila.qc["dark"], fila.discarded_qc) == (4, 3, 1, 1)
+    assert fila.coverage == pytest.approx(0.75)
 
 
 # ==========================================================================
@@ -354,9 +354,9 @@ def test_read_frame_con_recorte_y_sidecar_da_lo_mismo_que_el_completo(cfg, libra
     completo = render_display(texto)
     a = read_frame(completo, cfg, library)
     b = read_frame(cfg.roi.crop(completo), cfg, library, frames_roi=cfg.roi)
-    assert a.estado == "ok" and b.estado == "ok"
-    assert (b.valor, b.caracteres) == (a.valor, a.caracteres)
-    assert b.confianza == pytest.approx(a.confianza) and b.margen == pytest.approx(a.margen)
+    assert a.status == "ok" and b.status == "ok"
+    assert (b.value, b.chars) == (a.value, a.chars)
+    assert b.confidence == pytest.approx(a.confidence) and b.margin == pytest.approx(a.margin)
 
 
 def test_con_recorte_el_offset_se_ignora(cfg, library):
@@ -364,7 +364,7 @@ def test_con_recorte_el_offset_se_ignora(cfg, library):
     recorte = cfg.roi.crop(render_display("0.245"))
     base = read_frame(recorte, cfg, library, frames_roi=cfg.roi)
     movido = read_frame(recorte, cfg, library, frames_roi=cfg.roi, offset=(7, 5))
-    assert (movido.valor, movido.caracteres) == (base.valor, base.caracteres)
+    assert (movido.value, movido.chars) == (base.value, base.chars)
 
 
 def test_crop_for_reading_con_sidecar_devuelve_la_misma_imagen(cfg):
@@ -458,10 +458,10 @@ def test_qc_y_read_sobre_recortes_dan_las_mismas_lecturas(cfg, library, tmp_path
         tpl.mkdir()
         for i, t in enumerate(library):
             cv2.imwrite(str(template_path(t.label, i, tpl)), t.image)
-        cfg.qc.reference_frame = rows[0].archivo
+        cfg.qc.reference_frame = rows[0].file
         run_qc(cfg, frames, base / "idx.csv", base / "qc.csv", auto_thresholds=False, verbose=False)
         lecturas = run_read(cfg, frames, base / "qc.csv", tpl, base / "readings.csv", verbose=False)
-        resultados.append([(r.valor, r.estado) for r in lecturas])
+        resultados.append([(r.value, r.status) for r in lecturas])
     assert resultados[0] == resultados[1]
     assert [v for v, _ in resultados[1]] == pytest.approx([float(v) for v in valores])
 
@@ -473,21 +473,21 @@ def test_signo_con_tinta_y_sin_plantilla_menos_es_low_confidence(cfg_sign, libra
     """Rompe: que la celda de signo con tinta se ignore o se lea positiva sin '-' disponible."""
     sin_menos = [t for t in library_sign if t.label != "-"]
     r = read_frame(render_display("-0.245"), cfg_sign, sin_menos)
-    assert r.estado == "low_confidence"
-    assert r.valor is None or r.valor != pytest.approx(-0.245)
+    assert r.status == "low_confidence"
+    assert r.value is None or r.value != pytest.approx(-0.245)
 
 
 def test_signo_con_plantilla_menos_da_valor_negativo(cfg_sign, library_sign):
     """Rompe: la decision de negativo (tinta + etiqueta '-' + score/margen suficientes)."""
     r = read_frame(render_display("-0.245"), cfg_sign, library_sign)
-    assert r.estado == "ok" and r.valor == pytest.approx(-0.245)
-    assert r.caracteres == "-0.245"
+    assert r.status == "ok" and r.value == pytest.approx(-0.245)
+    assert r.chars == "-0.245"
 
 
 def test_signo_vacio_da_valor_positivo(cfg_sign, library_sign):
     r = read_frame(render_display(" 1.789"), cfg_sign, library_sign)
-    assert r.estado == "ok" and r.valor == pytest.approx(1.789)
-    assert r.caracteres.startswith(" ")
+    assert r.status == "ok" and r.value == pytest.approx(1.789)
+    assert r.chars.startswith(" ")
 
 
 def test_celda_de_signo_con_ruido_bajo_el_umbral_cuenta_como_vacia(cfg_sign, library_sign):
@@ -495,7 +495,7 @@ def test_celda_de_signo_con_ruido_bajo_el_umbral_cuenta_como_vacia(cfg_sign, lib
     img = render_display(" 1.789")
     img[cfg_sign.roi.y + 20, ROI_X + 2:ROI_X + 4] = 255          # 2 pixeles de ruido
     r = read_frame(img, cfg_sign, library_sign)
-    assert r.estado == "ok" and r.valor == pytest.approx(1.789)
+    assert r.status == "ok" and r.value == pytest.approx(1.789)
 
 
 def test_la_lectura_negativa_por_run_read_conserva_el_signo(cfg_sign, library_sign, tmp_path):
@@ -511,8 +511,8 @@ def test_la_lectura_negativa_por_run_read_conserva_el_signo(cfg_sign, library_si
     tpl.mkdir()
     for i, t in enumerate(library_sign):
         cv2.imwrite(str(template_path(t.label, i, tpl)), t.image)
-    cfg_sign.qc.reference_frame = rows[0].archivo
+    cfg_sign.qc.reference_frame = rows[0].file
     run_qc(cfg_sign, frames, tmp_path / "idx.csv", tmp_path / "qc.csv",
            auto_thresholds=False, verbose=False)
     lecturas = run_read(cfg_sign, frames, tmp_path / "qc.csv", tpl, tmp_path / "r.csv", verbose=False)
-    assert [r.valor for r in lecturas] == pytest.approx([-0.245, -0.246, -0.247])
+    assert [r.value for r in lecturas] == pytest.approx([-0.245, -0.246, -0.247])

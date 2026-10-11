@@ -49,8 +49,8 @@ COLD_START_OK_FRACTION = 0.10
 
 @dataclass(frozen=True)
 class Suggestion:
-    archivo: str
-    motivo: str
+    file: str
+    reason: str
     t_s: float = 0.0
 
 
@@ -65,17 +65,17 @@ def uncertainty(r: Reading, cfg: Config, use_margin: bool = True) -> float:
     *seguro de si mismo*: se lo trata como el mas incierto, porque etiquetarlo es lo
     mas informativo que hay.
     """
-    if r.estado == "spike":
+    if r.status == "spike":
         return -1.0
     t = cfg.templates
-    u = (r.confianza - t.min_score) / t.min_score
+    u = (r.confidence - t.min_score) / t.min_score
     if use_margin:
-        u = min(u, (r.margen - t.min_margin) / t.min_margin)
+        u = min(u, (r.margin - t.min_margin) / t.min_margin)
     return u
 
 
 def _is_uncertain(r: Reading, u: float) -> bool:
-    return r.estado in ("low_confidence", "spike") or u < UNCERTAIN_U
+    return r.status in ("low_confidence", "spike") or u < UNCERTAIN_U
 
 
 def _far_enough(t: float, taken: list[float], gap_s: float) -> bool:
@@ -94,12 +94,12 @@ def suggest_uncertain(
 ) -> list[Suggestion]:
     """Los ``n`` fotogramas mas inciertos, persistentes y diversos."""
     rs = sorted(
-        (r for r in readings if r.estado in ("ok", "low_confidence", "spike")),
+        (r for r in readings if r.status in ("ok", "low_confidence", "spike")),
         key=lambda r: r.t_s,
     )
     if not rs or n <= 0:
         return []
-    use_margin = any(r.margen > 0 for r in rs)  # un readings.csv viejo no trae margen
+    use_margin = any(r.margin > 0 for r in rs)  # un readings.csv viejo no trae margen
     us = [uncertainty(r, cfg, use_margin) for r in rs]
     flag = [_is_uncertain(r, u) for r, u in zip(rs, us)]
     ts = [r.t_s for r in rs]
@@ -107,30 +107,30 @@ def suggest_uncertain(
     candidates: list[tuple[float, int]] = []
     lo = hi = 0
     for i, r in enumerate(rs):
-        if r.archivo in exclude:
+        if r.file in exclude:
             continue
         while ts[lo] < r.t_s - window_s:
             lo += 1
         while hi < len(rs) and ts[hi] <= r.t_s + window_s:
             hi += 1
-        vecinos = [j for j in range(lo, hi) if j != i]
-        persistente = r.estado == "spike" or (
-            bool(vecinos) and sum(flag[j] for j in vecinos) / len(vecinos) >= min_persist
+        neighbors = [j for j in range(lo, hi) if j != i]
+        persistent = r.status == "spike" or (
+            bool(neighbors) and sum(flag[j] for j in neighbors) / len(neighbors) >= min_persist
         )
-        if flag[i] and persistente:
+        if flag[i] and persistent:
             candidates.append((us[i], i))
     candidates.sort()
 
     out: list[Suggestion] = []
     taken: list[float] = []
-    textos: dict[str, int] = {}
+    texts: dict[str, int] = {}
     for u, i in candidates:
         r = rs[i]
-        if not _far_enough(r.t_s, taken, min_gap_s) or textos.get(r.caracteres, 0) >= per_text:
+        if not _far_enough(r.t_s, taken, min_gap_s) or texts.get(r.chars, 0) >= per_text:
             continue
-        out.append(Suggestion(r.archivo, f"incierta u={u:+.2f} ({r.caracteres.strip() or '?'})", r.t_s))
+        out.append(Suggestion(r.file, f"incierta u={u:+.2f} ({r.chars.strip() or '?'})", r.t_s))
         taken.append(r.t_s)
-        textos[r.caracteres] = textos.get(r.caracteres, 0) + 1
+        texts[r.chars] = texts.get(r.chars, 0) + 1
         if len(out) >= n:
             break
     return out
@@ -177,21 +177,21 @@ def suggest_random(
             if _far_enough(cand[1], [t for _, t in chosen], min_gap_s):
                 chosen.append(cand)
     if len(chosen) < n:  # tramos vacios o muy juntos: completar al azar respetando la separacion
-        resto = [x for x in pool if x not in chosen]
-        rng.shuffle(resto)
-        for cand in resto:
+        rest = [x for x in pool if x not in chosen]
+        rng.shuffle(rest)
+        for cand in rest:
             if len(chosen) >= n:
                 break
             if _far_enough(cand[1], [t for _, t in chosen], min_gap_s):
                 chosen.append(cand)
-    return [Suggestion(a, "azar", t) for a, t in sorted(chosen, key=lambda x: x[1])]
+    return [Suggestion(a, "random", t) for a, t in sorted(chosen, key=lambda x: x[1])]
 
 
 def suggest_uniform(items: list[tuple[str, float]], exclude: set[str], n: int) -> list[Suggestion]:
     """Reparto parejo por la corrida (``teach.suggest_frames``), sin lo ya etiquetado."""
-    por_nombre = dict(items)
+    by_name = dict(items)
     names = [a for a, _ in sorted(items, key=lambda x: x[1]) if a not in exclude]
-    return [Suggestion(a, "uniforme", por_nombre[a]) for a in suggest_frames(names, n)]
+    return [Suggestion(a, "uniform", by_name[a]) for a in suggest_frames(names, n)]
 
 
 # --------------------------------------------------------------------------
@@ -214,7 +214,7 @@ def readings_stale(readings_path: Path | str, *dependencies: Path | str) -> bool
 def is_cold_start(readings: list[Reading]) -> bool:
     if not readings:
         return True
-    ok = sum(1 for r in readings if r.estado == "ok")
+    ok = sum(1 for r in readings if r.status == "ok")
     return ok / len(readings) < COLD_START_OK_FRACTION
 
 
@@ -254,17 +254,17 @@ def suggest(
         return suggest_uniform(items, exclude, n), notes
 
     n_u = n if strategy == "uncertain" else math.ceil(n / 2)
-    inciertas = suggest_uncertain(readings, cfg, exclude, n_u, gap_s)
-    if len(inciertas) < n_u:
-        notes.append(f"solo hay {len(inciertas)} fotogramas inciertos y persistentes (pedidos {n_u}).")
+    uncertain = suggest_uncertain(readings, cfg, exclude, n_u, gap_s)
+    if len(uncertain) < n_u:
+        notes.append(f"solo hay {len(uncertain)} fotogramas inciertos y persistentes (pedidos {n_u}).")
     if strategy == "uncertain":
-        return inciertas, notes
-    tomadas = {s.archivo for s in inciertas}
-    azar = suggest_random(
-        items, exclude | tomadas, n - len(inciertas), seed, gap_s,
-        (avoid_times or []) + [s.t_s for s in inciertas],
+        return uncertain, notes
+    taken = {s.file for s in uncertain}
+    random_picks = suggest_random(
+        items, exclude | taken, n - len(uncertain), seed, gap_s,
+        (avoid_times or []) + [s.t_s for s in uncertain],
     )
-    return sorted(inciertas + azar, key=lambda s: s.t_s), notes
+    return sorted(uncertain + random_picks, key=lambda s: s.t_s), notes
 
 
 # --------------------------------------------------------------------------
@@ -276,8 +276,8 @@ def assign(
     """Pone la muestra en ``which`` (``train`` o ``test``) y la saca del otro conjunto."""
     if which not in ("train", "test"):
         raise ValueError("which debe ser 'train' o 'test'")
-    train = [s for s in train if s.archivo != sample.archivo]
-    test = [s for s in test if s.archivo != sample.archivo]
+    train = [s for s in train if s.file != sample.file]
+    test = [s for s in test if s.file != sample.file]
     (train if which == "train" else test).append(sample)
     return train, test
 
@@ -287,10 +287,10 @@ def leakage(
 ) -> list[tuple[str, str, float]]:
     """Pares (prueba, entrenamiento) a menos de ``gap_s`` segundos: casi el mismo fotograma."""
     out = []
-    tr = [(s.archivo, time_from_name(s.archivo)) for s in train]
+    tr = [(s.file, time_from_name(s.file)) for s in train]
     for s in test:
-        t = time_from_name(s.archivo)
+        t = time_from_name(s.file)
         for a, ta in tr:
             if abs(t - ta) < gap_s:
-                out.append((s.archivo, a, abs(t - ta)))
+                out.append((s.file, a, abs(t - ta)))
     return sorted(out)

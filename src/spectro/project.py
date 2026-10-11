@@ -44,6 +44,9 @@ _IOS_VIDEO = re.compile(r"^(\d{8})_(\d{6})\d*_iOS$", re.IGNORECASE)
 
 #: Umbrales que ``qc`` auto-sugiere desde la distribucion de cada corrida. No se
 #: heredan de la calib porque dependen de la iluminacion de la sesion.
+#: Centinela de "todavia no calculado" (distinto de "calculado y vacio").
+_NOT_COMPUTED = object()
+
 _PER_RUN_QC_FIELDS = (
     "min_mean_luma",
     "max_mean_luma",
@@ -112,10 +115,6 @@ class CalibPaths:
     def n_templates(self) -> int:
         return len(list(self.templates.glob("*.png"))) if self.templates.is_dir() else 0
 
-    def is_ready(self) -> bool:
-        """Hay receta y glifos: alcanza para sembrar corridas y leer."""
-        return self.config.exists() and self.n_templates() > 0
-
 
 @dataclass(frozen=True)
 class RunPaths:
@@ -158,25 +157,28 @@ class RunPaths:
         return self.out / "readings.csv"
 
     @property
-    def read_meta(self) -> Path:
-        """Huella de la biblioteca con la que ``read`` produjo ``readings.csv``."""
-        return self.out / "read_meta.json"
+    def absorbance(self) -> Path:
+        return self.out / "absorbance.csv"
 
     @property
-    def absorbance(self) -> Path:
+    def legacy_absorbance(self) -> Path:
+        """Nombre viejo de la salida (``absorbancia.csv``): solo se lee como respaldo, nunca se escribe."""
         return self.out / "absorbancia.csv"
+
+    @property
+    def existing_absorbance(self) -> Path:
+        """La salida que existe: ``absorbance.csv`` o, si falta, el ``absorbancia.csv`` viejo."""
+        if not self.absorbance.exists() and self.legacy_absorbance.exists():
+            return self.legacy_absorbance
+        return self.absorbance
 
     @property
     def preview(self) -> Path:
         return self.out / "calibracion.png"
 
     @property
-    def glyph_sheet(self) -> Path:
-        return self.out / "glifos.png"
-
-    @property
     def truth(self) -> Path:
-        """Valores reales escritos a mano por ``teach`` (``archivo,valor``)."""
+        """Valores reales escritos a mano por ``teach`` (``file,value``)."""
         return self.root / "truth.csv"
 
     @property
@@ -185,7 +187,7 @@ class RunPaths:
 
     @property
     def test(self) -> Path:
-        """Conjunto de prueba (``archivo,valor``): nunca entra a la biblioteca."""
+        """Conjunto de prueba (``file,value``): nunca entra a la biblioteca."""
         return self.root / "test.csv"
 
     @property
@@ -202,7 +204,7 @@ class RunPaths:
 
     def is_done(self) -> bool:
         """Ya produjo el entregable: ``batch --skip-existing`` la saltea."""
-        return self.absorbance.exists()
+        return self.existing_absorbance.exists()
 
     def create(self) -> "RunPaths":
         """Crea el arbol de la corrida. Idempotente."""
@@ -231,9 +233,9 @@ def require_run(
     """
     run = RunPaths.for_run(run_id, runs_dir=runs_dir, calib_dir=calib_dir)
     if not run.exists():
-        corridas = list_runs(runs_dir=runs_dir)
-        disponibles = ", ".join(corridas) if corridas else "ninguna"
-        raise ValueError(f"No existe la corrida {run_id!r} en {runs_dir}/. Disponibles: {disponibles}")
+        runs = list_runs(runs_dir=runs_dir)
+        available = ", ".join(runs) if runs else "ninguna"
+        raise ValueError(f"No existe la corrida {run_id!r} en {runs_dir}/. Disponibles: {available}")
     return run
 
 
@@ -253,9 +255,9 @@ def seed_run_config(calib_config: Config, video: Path | str, fps: float) -> Conf
     cfg.qc.anchor = ROI()
     cfg.qc.reference_frame = ""
     cfg.acceptance = AcceptanceConfig()  # el criterio de aceptacion es de la calib, no de la corrida
-    limpios = QCConfig()
-    for campo in _PER_RUN_QC_FIELDS:
-        setattr(cfg.qc, campo, getattr(limpios, campo))
+    clean_qc = QCConfig()
+    for field_name in _PER_RUN_QC_FIELDS:
+        setattr(cfg.qc, field_name, getattr(clean_qc, field_name))
     return cfg
 
 
@@ -267,13 +269,13 @@ def calib_recipe(run_config: Config) -> Config:
     propio de la corrida: video, fps, offset de tiempo y umbrales de QC.
     """
     cfg = Config.from_dict(run_config.to_dict())
-    vacio = Config.default()
+    empty_cfg = Config.default()
     cfg.video = ""
-    cfg.fps = vacio.fps
-    cfg.time = vacio.time
-    limpios = QCConfig()
-    for campo in _PER_RUN_QC_FIELDS:
-        setattr(cfg.qc, campo, getattr(limpios, campo))
+    cfg.fps = empty_cfg.fps
+    cfg.time = empty_cfg.time
+    clean_qc = QCConfig()
+    for field_name in _PER_RUN_QC_FIELDS:
+        setattr(cfg.qc, field_name, getattr(clean_qc, field_name))
     return cfg
 
 
@@ -296,7 +298,8 @@ class RunContext:
     train: list
     test: list
     templates_dir: Path
-    _names: list[str] | None = field(default=None, init=False, repr=False)
+    #: Fotogramas que pasaron QC; ``_NOT_COMPUTED`` hasta que ``names()`` los resuelve.
+    _names: object = field(default=_NOT_COMPUTED, repr=False)
 
     @property
     def run_id(self) -> str:
@@ -320,33 +323,34 @@ class RunContext:
         test: Path | str | None = None,
         templates_dir: Path | str | None = None,
     ) -> "RunContext":
-        from .qc import load_offsets
+        from .qc import load_qc_report
         from .teach import load_truth
 
         qc_path = Path(qc_report) if qc_report is not None else run_paths.qc_report
         templates = templates_dir if templates_dir is not None else (
             calib_paths.templates if calib_paths is not None else run_paths.templates
         )
+        # El reporte se parsea una sola vez: de ahi salen los corrimientos y los que pasaron QC.
+        rows = load_qc_report(qc_path) if qc_path.exists() else []
+        passed = [r.file for r in rows if r.passed_qc]
         return cls(
             paths=run_paths,
             cfg=Config.load(config if config is not None else run_paths.config),
             frames_dir=Path(frames_dir if frames_dir is not None else run_paths.frames),
             qc_report=qc_path,
-            offsets=load_offsets(qc_path),
+            offsets={r.file: r.offset for r in rows},
             train=load_truth(truth if truth is not None else run_paths.truth),
             test=load_truth(test if test is not None else run_paths.test),
             templates_dir=Path(templates),
+            _names=passed if passed else _NOT_COMPUTED,  # ninguno paso: names() cae a la carpeta
         )
 
     def names(self) -> list[str]:
-        """Los fotogramas que pasaron QC; sin reporte, todos los del indice de la carpeta."""
+        """Los fotogramas que pasaron QC; sin reporte (o sin ninguno aprobado), los de la carpeta."""
         from .extract import index_from_dir
-        from .qc import load_offsets
 
-        if self._names is None:
-            self._names = list(load_offsets(self.qc_report, passed_only=True)) or [
-                e.archivo for e in index_from_dir(self.frames_dir)
-            ]
+        if self._names is _NOT_COMPUTED:
+            self._names = [e.file for e in index_from_dir(self.frames_dir)]
         return self._names
 
     def items(self) -> list[tuple[str, float]]:

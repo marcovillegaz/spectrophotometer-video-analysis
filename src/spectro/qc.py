@@ -5,7 +5,7 @@ completo: que la mitad de la mesa este en penumbra no importa; lo unico que
 decide si un fotograma es legible es como se ve el numero.
 
 ``qc_report.csv`` es el libro mayor por fotograma del pipeline: ``read`` le
-actualiza la columna ``estado`` con el resultado de la lectura y ``report`` lo
+actualiza la columna ``status`` con el resultado de la lectura y ``report`` lo
 usa para el cuadre de conteos (validas + descartadas = extraidas).
 
 | metrica          | detecta                        | estado          |
@@ -25,7 +25,6 @@ Interfaz publica:
     run_qc(cfg, ...) -> list[QCRow]
     suggest_thresholds(rows, cfg) -> QCConfig
     load_qc_report(path) -> list[QCRow]
-    load_offsets(path, passed_only) -> dict[str, tuple[int, int]]
     write_qc_report(rows, path) -> Path
 """
 
@@ -38,6 +37,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .compat import read_csv_rows
 from .config import Config, QCConfig
 from .extract import FRAMES_DIR, FRAMES_INDEX, index_from_dir, load_frames_index, load_roi_sidecar
 from .imaging import estimate_shift, load_frame, read_roi
@@ -47,27 +47,27 @@ QC_REPORT = Path("out/qc_report.csv")
 
 #: Estados que significan "este fotograma no se puede leer".
 REJECTED = {"dark", "blown", "blur", "low_contrast", "occluded", "blank", "camera_moved",
-            "roi_fuera"}
+            "roi_outside"}
 
 
 @dataclass
 class QCRow:
     """Una fila de ``qc_report.csv``: metricas de un fotograma y su estado."""
 
-    archivo: str
+    file: str
     t_s: float
-    indice: int
+    index: int
     mean_luma: float = 0.0
     p05: float = 0.0
     p95: float = 0.0
-    contraste: float = 0.0
+    contrast: float = 0.0
     blur_var: float = 0.0
     ink_fraction: float = 0.0
     anchor_ncc: float = 1.0
     #: Corrimiento respecto del fotograma de referencia, en pixeles.
     dx: int = 0
     dy: int = 0
-    estado: str = "ok"
+    status: str = "ok"
 
     @property
     def offset(self) -> tuple[int, int]:
@@ -75,7 +75,7 @@ class QCRow:
 
     @property
     def passed_qc(self) -> bool:
-        return self.estado not in REJECTED
+        return self.status not in REJECTED
 
 
 def measure(
@@ -88,7 +88,7 @@ def measure(
         "mean_luma": float(roi.mean()),
         "p05": p05,
         "p95": p95,
-        "contraste": p95 - p05,
+        "contrast": p95 - p05,
         "blur_var": float(cv2.Laplacian(roi, cv2.CV_64F).var()),
         "ink_fraction": float(np.count_nonzero(binary)) / binary.size,
     }
@@ -100,7 +100,7 @@ def classify(row: QCRow, qc: QCConfig) -> str:
         return "dark"
     if row.mean_luma > qc.max_mean_luma:
         return "blown"
-    if row.contraste < qc.min_contrast:
+    if row.contrast < qc.min_contrast:
         return "low_contrast"
     if row.blur_var < qc.min_blur_var:
         return "blur"
@@ -147,7 +147,7 @@ def suggest_thresholds(rows: list[QCRow], base: QCConfig, k: float = 6.0) -> QCC
     _, lo, hi = band("mean_luma")
     out.min_mean_luma = max(lo, 5.0)
     out.max_mean_luma = min(hi, 250.0)
-    _, lo, _ = band("contraste")
+    _, lo, _ = band("contrast")
     out.min_contrast = max(lo, 10.0)
     _, lo, _ = band("blur_var")
     out.min_blur_var = max(lo, 5.0)
@@ -181,44 +181,29 @@ def run_qc(
         print(f"== qc ==\n  {len(index)} fotogramas desde {frames_dir}/")
 
     anchor = cfg.qc.anchor
-    registrar = frames_roi is None and anchor.is_valid() and cfg.qc.register
-    anchor_ref = _reference_patch(cfg, frames_dir, index) if registrar else None
+    register = frames_roi is None and anchor.is_valid() and cfg.qc.register
+    anchor_ref = _reference_patch(cfg, frames_dir, index) if register else None
     if verbose:
-        if registrar:
-            ref_name = cfg.qc.reference_frame or index[0].archivo
+        if register:
+            ref_name = cfg.qc.reference_frame or index[0].file
             print(f"  re-registro activo contra {ref_name}, ancla {anchor.as_tuple()}")
         elif frames_roi is not None:
             print("  fotogramas ya recortados (--roi-only): sin re-registro ni ancla")
 
     rows: list[QCRow] = []
     for entry in index:
-        path = frames_dir / entry.archivo
-        row = QCRow(archivo=entry.archivo, t_s=entry.t_s, indice=entry.indice)
-        try:
-            gray = load_frame(path, cfg)
-        except RuntimeError:
-            row.estado = "blank"
-            rows.append(row)
-            continue
-        if anchor_ref is not None:
-            row.dx, row.dy, row.anchor_ncc = estimate_shift(
-                anchor_ref, gray, anchor, cfg.qc.max_shift_px
-            )
-        try:
-            medidas = measure(gray, cfg, frames_roi, row.offset)
-        except ValueError:  # el fotograma no puede contener la ROI: se descarta, no se aborta
-            row.estado = "roi_fuera"
-            rows.append(row)
-            continue
-        for key, value in medidas.items():
-            setattr(row, key, value)
+        path = frames_dir / entry.file
+        row = QCRow(file=entry.file, t_s=entry.t_s, index=entry.index)
+        row.status = _measure_row(row, path, cfg, frames_roi, anchor_ref)
         rows.append(row)
 
-    qc = suggest_thresholds(rows, cfg.qc) if auto_thresholds else cfg.qc
+    # Los descartados al medir (carga fallida, ROI fuera) tienen metricas en cero: no entran a la mediana.
+    measures = [r for r in rows if r.status == "ok"]
+    qc = suggest_thresholds(measures, cfg.qc) if auto_thresholds else cfg.qc
     qc.anchor, qc.min_anchor_ncc = cfg.qc.anchor, cfg.qc.min_anchor_ncc
     for row in rows:
-        if row.estado != "roi_fuera":
-            row.estado = classify(row, qc)
+        if row.status == "ok":  # los ya descartados al medir (carga fallida, ROI fuera) se respetan
+            row.status = classify(row, qc)
 
     if auto_thresholds and config_path is not None:
         cfg.qc = qc
@@ -235,7 +220,7 @@ def run_qc(
         summary = _summary(rows)
         total_ok = summary.get("ok", 0)
         print(f"  {total_ok}/{len(rows)} fotogramas pasan QC")
-        if registrar:
+        if register:
             print(
                 f"    deriva de camara: dx {min(r.dx for r in rows)}..{max(r.dx for r in rows)} px, "
                 f"dy {min(r.dy for r in rows)}..{max(r.dy for r in rows)} px (compensada)"
@@ -247,12 +232,35 @@ def run_qc(
     return rows
 
 
+def _measure_row(row: QCRow, path: Path, cfg: Config, frames_roi, anchor_ref) -> str:
+    """Mide un fotograma y completa ``row``. Devuelve ``"ok"`` o el estado de descarte.
+
+    ``blank`` si el fotograma no carga; ``roi_outside`` si no puede contener la ROI: se
+    descarta, no se aborta. ``run_qc`` no reclasifica los que no devuelven ``"ok"``.
+    """
+    try:
+        gray = load_frame(path, cfg)
+    except RuntimeError:
+        return "blank"
+    if anchor_ref is not None:
+        row.dx, row.dy, row.anchor_ncc = estimate_shift(
+            anchor_ref, gray, cfg.qc.anchor, cfg.qc.max_shift_px
+        )
+    try:
+        measures = measure(gray, cfg, frames_roi, row.offset)
+    except ValueError:
+        return "roi_outside"
+    for key, value in measures.items():
+        setattr(row, key, value)
+    return "ok"
+
+
 def _reference_patch(cfg: Config, frames_dir: Path, index) -> np.ndarray | None:
     """Recorta el ancla del fotograma de referencia: el origen del registro."""
-    name = cfg.qc.reference_frame or index[0].archivo
+    name = cfg.qc.reference_frame or index[0].file
     path = frames_dir / name
     if not path.exists():
-        path = frames_dir / index[0].archivo
+        path = frames_dir / index[0].file
     try:
         return cfg.qc.anchor.crop(load_frame(path, cfg))
     except RuntimeError:
@@ -262,7 +270,7 @@ def _reference_patch(cfg: Config, frames_dir: Path, index) -> np.ndarray | None:
 def _summary(rows: list[QCRow]) -> dict[str, int]:
     out: dict[str, int] = {}
     for r in rows:
-        out[r.estado] = out.get(r.estado, 0) + 1
+        out[r.status] = out.get(r.status, 0) + 1
     return out
 
 
@@ -277,19 +285,19 @@ def write_qc_report(rows: list[QCRow], path: Path | str = QC_REPORT) -> Path:
         for r in rows:
             writer.writerow(
                 [
-                    r.archivo,
+                    r.file,
                     f"{r.t_s:.3f}",
-                    r.indice,
+                    r.index,
                     f"{r.mean_luma:.2f}",
                     f"{r.p05:.1f}",
                     f"{r.p95:.1f}",
-                    f"{r.contraste:.2f}",
+                    f"{r.contrast:.2f}",
                     f"{r.blur_var:.2f}",
                     f"{r.ink_fraction:.4f}",
                     f"{r.anchor_ncc:.4f}",
                     r.dx,
                     r.dy,
-                    r.estado,
+                    r.status,
                 ]
             )
     return path
@@ -301,41 +309,22 @@ def load_qc_report(path: Path | str = QC_REPORT) -> list[QCRow]:
     if not path.exists():
         raise FileNotFoundError(f"No existe {path}. Corre primero: python -m spectro qc")
     rows: list[QCRow] = []
-    with path.open(encoding="utf-8") as fh:
-        for r in csv.DictReader(fh):
-            rows.append(
-                QCRow(
-                    archivo=r["archivo"],
-                    t_s=float(r["t_s"]),
-                    indice=int(r["indice"]),
-                    mean_luma=float(r["mean_luma"]),
-                    p05=float(r["p05"]),
-                    p95=float(r["p95"]),
-                    contraste=float(r["contraste"]),
-                    blur_var=float(r["blur_var"]),
-                    ink_fraction=float(r["ink_fraction"]),
-                    anchor_ncc=float(r["anchor_ncc"]),
-                    dx=int(r.get("dx", 0) or 0),
-                    dy=int(r.get("dy", 0) or 0),
-                    estado=r["estado"],
-                )
+    for r in read_csv_rows(path):
+        rows.append(
+            QCRow(
+                file=r["file"],
+                t_s=float(r["t_s"]),
+                index=int(r["index"]),
+                mean_luma=float(r["mean_luma"]),
+                p05=float(r["p05"]),
+                p95=float(r["p95"]),
+                contrast=float(r["contrast"]),
+                blur_var=float(r["blur_var"]),
+                ink_fraction=float(r["ink_fraction"]),
+                anchor_ncc=float(r["anchor_ncc"]),
+                dx=int(r.get("dx", 0) or 0),
+                dy=int(r.get("dy", 0) or 0),
+                status=r["status"],
             )
+        )
     return rows
-
-
-def load_offsets(
-    path: Path | str, passed_only: bool = False
-) -> dict[str, tuple[int, int]]:
-    """``{archivo: (dx, dy)}`` del reporte de QC; ``{}`` si el reporte no existe.
-
-    Es el corrimiento de camara que ``qc`` midio por fotograma: todo recorte de
-    celda (``read``, ``teach``) lo aplica para caer sobre los mismos pixeles.
-    ``passed_only`` deja solo los fotogramas que pasaron el filtro, en el orden
-    del reporte.
-    """
-    path = Path(path)
-    if not path.exists():
-        return {}
-    return {
-        r.archivo: r.offset for r in load_qc_report(path) if r.passed_qc or not passed_only
-    }

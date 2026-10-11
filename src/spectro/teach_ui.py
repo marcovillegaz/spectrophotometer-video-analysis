@@ -4,7 +4,7 @@ Dos modos, que se alternan con ``Gestionar biblioteca`` / ``Volver a muestras``:
 
 * **muestras**: a la izquierda, la ROI del fotograma ampliada con los cortes de slot y,
   debajo de cada celda, el caracter que le corresponde segun el valor tipeado y lo que
-  lee hoy el lector. A la derecha, el panel: navegacion, teclado numerico de botones,
+  lee hoy el lector. A la derecha, el panel: navegacion, valor por teclado fisico,
   cobertura de caracteres y los botones ``Agregar a biblioteca`` (suma sin duplicar),
   ``Reemplazar biblioteca`` (pide confirmacion) y ``Validar``.
 * **biblioteca**: una grilla con las plantillas de ``calib/templates``. Se elige una
@@ -12,49 +12,60 @@ Dos modos, que se alternan con ``Gestionar biblioteca`` / ``Volver a muestras``:
   el ultimo borrado. Cada plantilla muestra cuantas celdas de las muestras gana bien y
   cuantas gana mal, para decidir cuales sobran.
 
-El estado, las acciones y el layout son puros y se testean sin ventana.
+El estado, las acciones, los efectos (``TeachSession``) y el layout son puros y se
+testean sin ventana: el estado, el reducer y la sesion viven en ``teach_session``;
+este modulo solo dibuja y lee eventos.
 
 Interfaz publica:
-    TeachState, apply_action(state, action, n_names, n_lib) -> TeachState
     layout_teach(...) -> TLayout          tile_rect(i) -> (x, y, w, h)
-    add_to_set(train, test, archivo, text, digits, which) -> (train, test, mensaje)
-    remove_sample(samples, archivo) -> samples
     render_teach(view) -> (canvas, TLayout)
-    run_teach_ui(cfg, args, names, offsets, samples) -> int
+    run_teach_ui(cfg, params: TeachParams, names, offsets, samples) -> int
 """
 
 from __future__ import annotations
 
-import random
-from dataclasses import dataclass, field, replace
-from pathlib import Path
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
 
 from . import teach as T
-from .calib_ui import BAD_C, BG, BTN_ON, DIM, FG, OK_C, YELLOW, Button, _button, _text, hit_test
-from .config import ROI, Config, DigitsConfig
-from .extract import load_roi_sidecar, time_from_name
-from .imaging import load_frame, read_roi, shifted, slot_boxes
-from .read import Reading, read_frame
+from .config import ROI, Config
+from .extract import time_from_name
+from .imaging import read_roi, shifted, slot_boxes
+from .read import Reading
+from .ui_common import (
+    BAD_C,
+    BG,
+    BTN_ON,
+    DIM,
+    FG,
+    OK_C,
+    PANEL_W,
+    YELLOW,
+    BaseLayout,
+    Button,
+    draw_button,
+    draw_char,
+    draw_text,
+    draw_titles,
+    hit_test,
+    open_window,
+    panel_geometry,
+    score_color,
+    slot_color,
+    window_closed,
+)
+from .teach_session import COLS, PER_PAGE, TeachParams, TeachSession, TeachState
 
-PANEL_W = 360
 VIEW_W = 760
 HEIGHT = 800
 CROP_BOX = (10, 10, VIEW_W - 20, 240)
 THUMB_BOX = (10, 350, VIEW_W - 20, 440)
 MARGIN_PX = 14
-GREEN = (0, 255, 0)
-ORANGE = (0, 128, 255)
 
-# grilla de la biblioteca
-COLS, ROWS = 9, 6
-PER_PAGE = COLS * ROWS
+# grilla de la biblioteca (COLS, ROWS y PER_PAGE viven en teach_session)
 TILE_W, TILE_H, TILE_GAP = 80, 122, 2
-
-#: Acciones destructivas: el primer clic arma la confirmacion y el segundo ejecuta.
-CONFIRM_ACTIONS = ("replace", "del_one", "del_label")
 
 
 def tile_rect(i: int) -> tuple[int, int, int, int]:
@@ -64,135 +75,30 @@ def tile_rect(i: int) -> tuple[int, int, int, int]:
 
 
 # --------------------------------------------------------------------------
-# Estado y acciones (puros)
-# --------------------------------------------------------------------------
-@dataclass(frozen=True)
-class TeachState:
-    index: int = 0
-    text: str = ""
-    color: bool = False
-    done: bool = False
-    #: Pedido para el loop (build/validate/borrar/...): lo que toca archivos.
-    request: str = ""
-    message: str = ""
-    mode: str = "muestras"      # "muestras" | "biblioteca"
-    sel: int = 0                # plantilla elegida (indice global en la biblioteca)
-    page: int = 0
-    confirm: str = ""           # accion destructiva esperando el segundo clic
-    target: str = "train"       # conjunto al que va "Agregar muestra": train | test
-
-
-def go_to(state: TeachState, samples: list[T.Sample], names: list[str], index: int) -> TeachState:
-    """Cambia de fotograma y precarga el valor si ya tiene muestra."""
-    index = max(0, min(index, len(names) - 1)) if names else 0
-    existing = next((s.valor for s in samples if names and s.archivo == names[index]), "")
-    return replace(state, index=index, text=existing, message="")
-
-
-def apply_action(state: TeachState, action: str, n_names: int, n_lib: int = 0) -> TeachState:
-    """Reducer de las acciones que solo tocan el estado. Las que tocan archivos dejan un ``request``."""
-    # Cualquier accion distinta de la destructiva pendiente cancela la confirmacion.
-    if action not in CONFIRM_ACTIONS and state.confirm:
-        state = replace(state, confirm="")
-    if action in CONFIRM_ACTIONS:
-        if action != "replace" and not n_lib:
-            return state
-        if state.confirm == action:
-            return replace(state, confirm="", request=action)
-        return replace(state, confirm=action, message="")
-
-    if action.startswith("key:"):
-        ch = action[4:]
-        if len(state.text) < 12 and ch in "0123456789.-":
-            return replace(state, text=state.text + ch, message="")
-        return state
-    if action == "back":
-        return replace(state, text=state.text[:-1], message="")
-    if action == "clear":
-        return replace(state, text="", message="")
-    nav = {"prev": -1, "next": 1, "jump-10": -10, "jump+10": 10}
-    if action in nav and n_names:
-        return replace(state, index=max(0, min(state.index + nav[action], n_names - 1)), message="")
-    if action == "color":
-        return replace(state, color=not state.color)
-    if action in ("validate", "add_lib", "undo", "eval"):
-        return replace(state, request=action)
-    if action == "target":
-        return replace(state, target="test" if state.target == "train" else "train", message="")
-    if action == "save":
-        return replace(state, done=True)
-    # -- modo biblioteca
-    if action == "lib":
-        return replace(state, mode="biblioteca", sel=0, page=0, request="refresh_lib", message="")
-    if action == "samples":
-        return replace(state, mode="muestras", message="")
-    if action in ("page+", "page-"):
-        last = max((n_lib - 1) // PER_PAGE, 0)
-        page = min(state.page + 1, last) if action == "page+" else max(state.page - 1, 0)
-        return replace(state, page=page)
-    if action.startswith("tile:"):
-        idx = state.page * PER_PAGE + int(action[5:])
-        return replace(state, sel=idx) if idx < n_lib else state
-    if action.startswith("relabel:") and n_lib:
-        return replace(state, request=action)
-    return state
-
-
-def remove_sample(samples: list[T.Sample], archivo: str) -> list[T.Sample]:
-    return [s for s in samples if s.archivo != archivo]
-
-
-def add_to_set(
-    train: list[T.Sample], test: list[T.Sample], archivo: str, text: str, digits: DigitsConfig,
-    which: str,
-) -> tuple[list[T.Sample], list[T.Sample], str]:
-    """Agrega la muestra a ``which`` (``train`` o ``test``) sin que quede en los dos conjuntos.
-
-    Si el valor no calza con la config no cambia nada. Mover una muestra de
-    entrenamiento a prueba avisa que ya aporto glifos a la biblioteca.
-    """
-    from .sampling import assign
-
-    try:
-        valor = T.parse_value(text, digits)
-    except ValueError as exc:
-        return train, test, str(exc)
-    estaba_en_train = any(s.archivo == archivo for s in train)
-    train, test = assign(train, test, T.Sample(archivo, valor), which)
-    if which == "test" and estaba_en_train:
-        return train, test, "agregada a prueba (ya habia aportado glifos: reemplaza la biblioteca)"
-    return train, test, "muestra agregada" if which == "train" else "muestra de prueba agregada"
-
-
-# --------------------------------------------------------------------------
 # Layout
 # --------------------------------------------------------------------------
 @dataclass(frozen=True)
-class TLayout:
-    x0: int
-    height: int
-    buttons: list[Button]
+class TLayout(BaseLayout):
     field: tuple[int, int, int, int]
     chips_y: int
     result_y: int
-    titles: dict[str, int] = field(default_factory=dict)
 
 
 def layout_teach(
     x0: int = VIEW_W,
     height: int = HEIGHT,
-    mode: str = "muestras",
+    mode: str = "samples",
     n_tiles: int = 0,
     sel_label: str = "",
     confirm: str = "",
     lib_size: int = 0,
     target: str = "train",
 ) -> TLayout:
-    px, inner = x0 + 10, PANEL_W - 20
+    px, inner = panel_geometry(x0)
     half = (inner - 6) // 2
     b: list[Button] = []
 
-    if mode == "biblioteca":
+    if mode == "library":
         for i in range(min(n_tiles, PER_PAGE)):
             b.append(Button(f"tile:{i}", *tile_rect(i), ""))
         b.append(Button("del_one", px, 214, inner, 32,
@@ -220,29 +126,22 @@ def layout_teach(
         b.append(Button(act, px + i * (q + 6), 78, q, 28, lab))
     b.append(Button("random", px, 112, half, 28, "Aleatorio"))
     b.append(Button("color", px + half + 6, 112, half, 28, "Color / binario"))
-    # teclado numerico
-    keys = [["7", "8", "9", "back"], ["4", "5", "6", "."], ["1", "2", "3", "-"]]
-    for r, row in enumerate(keys):
-        for c, k in enumerate(row):
-            act = "back" if k == "back" else f"key:{k}"
-            b.append(Button(act, px + c * (q + 6), 244 + r * 38, q, 32, "<-" if k == "back" else k))
-    b.append(Button("key:0", px, 244 + 3 * 38, 2 * q + 6, 32, "0"))
-    b.append(Button("clear", px + 2 * (q + 6), 244 + 3 * 38, 2 * q + 6, 32, "Borrar todo"))
-    b.append(Button("add", px, 410, 2 * q + 6 + q + 6, 32, "Agregar muestra"))
-    b.append(Button("remove", px + 3 * (q + 6), 410, q, 32, "Quitar"))
-    b.append(Button("add_lib", px, 572, half, 32, "Agregar a biblioteca"))
-    b.append(Button("replace", px + half + 6, 572, half, 32,
+    b.append(Button("clear", px, 248, inner, 32, "Borrar todo"))
+    b.append(Button("add", px, 290, 2 * q + 6 + q + 6, 32, "Agregar muestra"))
+    b.append(Button("remove", px + 3 * (q + 6), 290, q, 32, "Quitar"))
+    b.append(Button("add_lib", px, 452, half, 32, "Agregar a biblioteca"))
+    b.append(Button("replace", px + half + 6, 452, half, 32,
                     f"Confirmar: reemplaza {lib_size}" if confirm == "replace"
                     else "Reemplazar biblioteca"))
-    b.append(Button("validate", px, 610, half, 32, "Validar"))
-    b.append(Button("lib", px + half + 6, 610, half, 32, "Gestionar biblioteca"))
-    b.append(Button("target", px, 648, half, 30,
+    b.append(Button("validate", px, 490, half, 32, "Validar"))
+    b.append(Button("lib", px + half + 6, 490, half, 32, "Gestionar biblioteca"))
+    b.append(Button("target", px, 528, half, 30,
                     "Conjunto: " + ("Prueba" if target == "test" else "Entrenam.")))
-    b.append(Button("eval", px + half + 6, 648, half, 30, "Evaluar prueba"))
+    b.append(Button("eval", px + half + 6, 528, half, 30, "Evaluar prueba"))
     b.append(Button("save", px, height - 46, inner, 34, "Guardar y salir"))
     return TLayout(
-        x0=x0, height=height, buttons=b, field=(px, 190, inner, 34), chips_y=502, result_y=684,
-        titles={"FOTOGRAMA": 12, "VALOR": 156, "MUESTRAS": 456},
+        x0=x0, height=height, buttons=b, field=(px, 190, inner, 34), chips_y=382, result_y=564,
+        titles={"FOTOGRAMA": 12, "VALOR": 156, "MUESTRAS": 336},
     )
 
 
@@ -264,7 +163,7 @@ class TeachView:
     entries: list[T.LibEntry] = field(default_factory=list)
     can_undo: bool = False
     test: list[T.Sample] = field(default_factory=list)
-    motivos: dict[str, str] = field(default_factory=dict)
+    reasons: dict[str, str] = field(default_factory=dict)
     #: ROI que ``extract --roi-only`` ya aplico a los fotogramas (``None`` si son completos).
     frames_roi: ROI | None = None
 
@@ -285,12 +184,12 @@ def _chips(canvas, x: int, y: int, inner: int, counts: dict[str, int], cfg: Conf
         color = (60, 60, 60) if not needed else (OK_C if n >= 2 else ((0, 140, 255) if n == 1 else BAD_C))
         cx = x + i * cw
         cv2.rectangle(canvas, (cx, y), (cx + cw - 3, y + 38), color, -1)
-        _text(canvas, ch, cx + 6, y + 17, 0.5, (255, 255, 255), True)
-        _text(canvas, str(n), cx + 6, y + 33, 0.38, (255, 255, 255))
+        draw_text(canvas, ch, cx + 6, y + 17, 0.5, (255, 255, 255), True)
+        draw_text(canvas, str(n), cx + 6, y + 33, 0.38, (255, 255, 255))
 
 
 def render_teach(view: TeachView) -> tuple[np.ndarray, TLayout]:
-    if view.state.mode == "biblioteca":
+    if view.state.mode == "library":
         return _render_library(view)
     st, cfg = view.state, view.cfg
     lay = layout_teach(confirm=st.confirm, lib_size=view.library_size, target=st.target)
@@ -312,7 +211,7 @@ def render_teach(view: TeachView) -> tuple[np.ndarray, TLayout]:
         except ValueError as exc:
             crop_err = str(exc)
     if crop_err:
-        _text(canvas, crop_err[:90], 20, 60, 0.45, BAD_C)
+        draw_text(canvas, crop_err[:90], 20, 60, 0.45, BAD_C)
     elif view.gray is not None and cfg.roi.is_valid():
         if view.frames_roi is not None and view.frames_roi.is_valid():
             # El fotograma ya es la ROI: no hay contexto alrededor ni corrimiento.
@@ -337,21 +236,20 @@ def render_teach(view: TeachView) -> tuple[np.ndarray, TLayout]:
         boxes = slot_boxes(roi.w, digits)
         base = oy + zoomed.shape[0] + 26
         for i, (a, c) in enumerate(boxes):
-            col = GREEN if i == digits.sign_slot else (ORANGE if i in (digits.separator_slots or []) else YELLOW)
+            col = slot_color(i, digits, with_separators=True)
             cv2.line(canvas, (rx + int(a * f), ry), (rx + int(a * f), ry + rh), col, 1)
             cx = rx + int((a + c) / 2 * f)
             if cells is not None and i < len(cells):
-                _text(canvas, cells[i] if cells[i] != " " else "_", cx - 8, base, 0.9, FG, True)
-            if view.reading is not None and i < len(view.reading.caracteres):
-                ch = view.reading.caracteres[i]
+                draw_char(canvas, cells[i], cx - 8, base, 0.9, FG, True)
+            if view.reading is not None and i < len(view.reading.chars):
+                ch = view.reading.chars[i]
                 sc = view.reading.scores[i] if i < len(view.reading.scores) else 0.0
                 good = sc >= cfg.templates.min_score
-                _text(canvas, ch if ch != " " else "_", cx - 6, base + 30, 0.6,
-                      (80, 220, 80) if good else (80, 80, 240))
-                _text(canvas, f"{sc:.2f}", cx - 14, base + 48, 0.38, DIM)
-        _text(canvas, "escrito", 12, base, 0.45, DIM)
-        _text(canvas, "lector", 12, base + 30, 0.45, DIM)
-        _text(canvas, "score", 12, base + 48, 0.38, DIM)
+                draw_char(canvas, ch, cx - 6, base + 30, 0.6, score_color(good))
+                draw_text(canvas, f"{sc:.2f}", cx - 14, base + 48, 0.38, DIM)
+        draw_text(canvas, "escrito", 12, base, 0.45, DIM)
+        draw_text(canvas, "lector", 12, base + 30, 0.45, DIM)
+        draw_text(canvas, "score", 12, base + 48, 0.38, DIM)
         # miniatura del fotograma entero con la ROI
         full = view.color if view.color is not None else cv2.cvtColor(view.gray, cv2.COLOR_GRAY2BGR)
         thumb, tf, tx, ty = _fit(full, THUMB_BOX, 1.0)
@@ -360,33 +258,30 @@ def render_teach(view: TeachView) -> tuple[np.ndarray, TLayout]:
                       (tx + int((roi.x + roi.w) * tf) + 3, ty + int((roi.y + roi.h) * tf) + 3),
                       YELLOW, 2)
     else:
-        _text(canvas, "Sin ROI: calibra primero con calibrate", 20, 60, 0.6, BAD_C)
+        draw_text(canvas, "Sin ROI: calibra primero con calibrate", 20, 60, 0.6, BAD_C)
 
     # -- panel
-    px = lay.x0 + 10
-    inner = PANEL_W - 20
-    for title, ty in lay.titles.items():
-        _text(canvas, title, px, ty + 14, 0.5, YELLOW, True)
-        cv2.line(canvas, (px, ty + 20), (px + inner, ty + 20), (90, 90, 90), 1)
-    en_train = any(s.archivo == name for s in view.samples)
-    en_test = any(s.archivo == name for s in view.test)
-    has = en_train or en_test
-    estado = "CON muestra (entrenamiento)" if en_train else (
-        "CON muestra (prueba)" if en_test else "sin muestra")
-    _text(canvas, name, px, 52, 0.46, FG)
-    motivo = view.motivos.get(name, "")
-    if motivo:
-        _text(canvas, motivo[:24], px + 190, 52, 0.38, YELLOW)
+    px, inner = panel_geometry(lay.x0)
+    draw_titles(canvas, lay)
+    in_train = any(s.file == name for s in view.samples)
+    in_test = any(s.file == name for s in view.test)
+    has = in_train or in_test
+    status = "CON muestra (entrenamiento)" if in_train else (
+        "CON muestra (prueba)" if in_test else "sin muestra")
+    draw_text(canvas, name, px, 52, 0.46, FG)
+    reason = view.reasons.get(name, "")
+    if reason:
+        draw_text(canvas, reason[:24], px + 190, 52, 0.38, YELLOW)
     t_s = time_from_name(name) if name else 0.0
-    _text(canvas, f"{st.index + 1}/{len(view.names)}   t={t_s:.2f} s   {estado}",
+    draw_text(canvas, f"{st.index + 1}/{len(view.names)}   t={t_s:.2f} s   {status}",
           px, 70, 0.4, OK_C if has else DIM)
     fx, fy, fw, fh = lay.field
     cv2.rectangle(canvas, (fx, fy), (fx + fw, fy + fh), (20, 20, 20), -1)
     cv2.rectangle(canvas, (fx, fy), (fx + fw, fy + fh), BTN_ON if st.text else (110, 110, 110), 1)
-    _text(canvas, st.text + "|", fx + 8, fy + 25, 0.8, FG, True)
+    draw_text(canvas, st.text + "|", fx + 8, fy + 25, 0.8, FG, True)
     ok = cells is not None
     hint = f"formato: {T.expected_format(cfg.digits)}"
-    _text(canvas, err if err else hint, px, 240, 0.4, BAD_C if err else DIM)
+    draw_text(canvas, err if err else hint, px, 240, 0.4, BAD_C if err else DIM)
     for b in lay.buttons:
         active = b.action == "color" and st.color
         col = {"save": OK_C, "add_lib": OK_C, "validate": (150, 90, 40),
@@ -396,21 +291,21 @@ def render_teach(view: TeachView) -> tuple[np.ndarray, TLayout]:
             col = BAD_C
         if b.action == "add" and ok:
             col = OK_C
-        _button(canvas, b, active, col)
+        draw_button(canvas, b, active, col)
 
     # -- muestras y cobertura
     cov = T.coverage(view.samples, cfg.digits)
-    _text(canvas, f"{len(view.samples)} entrenamiento · {len(view.test)} prueba · "
-          f"biblioteca {view.library_size}", px, 494, 0.42, FG)
+    draw_text(canvas, f"{len(view.samples)} entrenamiento · {len(view.test)} prueba · "
+          f"biblioteca {view.library_size}", px, lay.chips_y - 8, 0.42, FG)
     _chips(canvas, px, lay.chips_y, inner, cov, cfg)
-    _text(canvas, "verde: 2+ ejemplos   naranja: 1   rojo: faltan", px, 552, 0.36, DIM)
+    draw_text(canvas, "verde: 2+ ejemplos   naranja: 1   rojo: faltan", px, lay.chips_y + 50, 0.36, DIM)
 
     y = lay.result_y + 14
     for line in (view.result_lines or [])[:3]:
-        _text(canvas, line[:58], px, y, 0.38, FG if "exactas" not in line else YELLOW)
+        draw_text(canvas, line[:58], px, y, 0.38, FG if "exactas" not in line else YELLOW)
         y += 17
     if st.message:
-        _text(canvas, st.message[:56], px, lay.height - 58, 0.42, YELLOW)
+        draw_text(canvas, st.message[:56], px, lay.height - 58, 0.42, YELLOW)
     return canvas, lay
 
 
@@ -420,7 +315,7 @@ def _render_library(view: TeachView) -> tuple[np.ndarray, TLayout]:
     page_entries = entries[st.page * PER_PAGE : (st.page + 1) * PER_PAGE]
     sel = entries[st.sel] if 0 <= st.sel < len(entries) else None
     lay = layout_teach(
-        mode="biblioteca", n_tiles=len(page_entries), sel_label=sel.label if sel else "",
+        mode="library", n_tiles=len(page_entries), sel_label=sel.label if sel else "",
         confirm=st.confirm,
     )
     canvas = np.full((HEIGHT, VIEW_W + PANEL_W, 3), BG, dtype=np.uint8)
@@ -439,34 +334,31 @@ def _render_library(view: TeachView) -> tuple[np.ndarray, TLayout]:
             glyph = (glyph * 0.45).astype(np.uint8)
         gx = x + (w - glyph.shape[1]) // 2
         canvas[y + 22 : y + 22 + glyph.shape[0], gx : gx + glyph.shape[1]] = glyph
-        _text(canvas, f"{e.label}_{e.n}", x + 6, y + 15, 0.42, YELLOW if selected else FG)
+        draw_text(canvas, f"{e.label}_{e.n}", x + 6, y + 15, 0.42, YELLOW if selected else FG)
         txt = f"{e.uses} usos" + (f" {e.errors} mal" if e.errors else "")
-        _text(canvas, txt, x + 4, y + h - 6, 0.34, BAD_C if e.errors else DIM)
+        draw_text(canvas, txt, x + 4, y + h - 6, 0.34, BAD_C if e.errors else DIM)
     if not entries:
-        _text(canvas, "La biblioteca esta vacia. Volve a muestras y pulsa Agregar a biblioteca.",
+        draw_text(canvas, "La biblioteca esta vacia. Volve a muestras y pulsa Agregar a biblioteca.",
               20, 60, 0.55, BAD_C)
 
     # -- panel
-    px = lay.x0 + 10
-    inner = PANEL_W - 20
-    for title, ty in lay.titles.items():
-        _text(canvas, title, px, ty + 14, 0.5, YELLOW, True)
-        cv2.line(canvas, (px, ty + 20), (px + inner, ty + 20), (90, 90, 90), 1)
+    px, inner = panel_geometry(lay.x0)
+    draw_titles(canvas, lay)
     counts: dict[str, int] = {}
     for e in entries:
         counts[e.label] = counts.get(e.label, 0) + 1
-    _text(canvas, f"{len(entries)} plantillas en total", px, 52, 0.45, FG)
+    draw_text(canvas, f"{len(entries)} plantillas en total", px, 52, 0.45, FG)
     _chips(canvas, px, lay.chips_y, inner, counts, cfg)
     if sel is not None:
-        _text(canvas, f"{sel.path.name}    caracter '{sel.label}'", px, 154, 0.5, FG, True)
-        _text(canvas, f"gana bien {sel.uses} celdas de las muestras", px, 176, 0.42, FG)
+        draw_text(canvas, f"{sel.path.name}    caracter '{sel.label}'", px, 154, 0.5, FG, True)
+        draw_text(canvas, f"gana bien {sel.uses} celdas de las muestras", px, 176, 0.42, FG)
         if sel.errors:
-            _text(canvas, f"gana MAL {sel.errors} celdas: confunde con otro caracter", px, 194, 0.4, BAD_C)
+            draw_text(canvas, f"gana MAL {sel.errors} celdas: confunde con otro caracter", px, 194, 0.4, BAD_C)
         elif sel.uses == 0:
-            _text(canvas, "no aporta a las muestras actuales", px, 194, 0.4, DIM)
+            draw_text(canvas, "no aporta a las muestras actuales", px, 194, 0.4, DIM)
     last = max((len(entries) - 1) // PER_PAGE, 0)
-    _text(canvas, f"pagina {st.page + 1} de {last + 1}", px + 110, 372, 0.4, DIM)
-    _text(canvas, "Cambia el caracter de la plantilla elegida:", px, 428, 0.4, DIM)
+    draw_text(canvas, f"pagina {st.page + 1} de {last + 1}", px + 110, 372, 0.4, DIM)
+    draw_text(canvas, "Cambia el caracter de la plantilla elegida:", px, 428, 0.4, DIM)
     for b in lay.buttons:
         if b.action.startswith("tile:"):
             continue
@@ -475,254 +367,84 @@ def _render_library(view: TeachView) -> tuple[np.ndarray, TLayout]:
                "samples": OK_C}.get(b.action)
         if b.action == "undo" and not view.can_undo:
             col = (55, 55, 55)
-        _button(canvas, b, False, col)
+        draw_button(canvas, b, False, col)
     y = lay.result_y + 14
     for line in (view.result_lines or [])[:6]:
-        _text(canvas, line[:58], px, y, 0.38, FG if "exactas" not in line else YELLOW)
+        draw_text(canvas, line[:58], px, y, 0.38, FG if "exactas" not in line else YELLOW)
         y += 17
     if st.message:
-        _text(canvas, st.message[:56], px, lay.height - 58, 0.42, YELLOW)
+        draw_text(canvas, st.message[:56], px, lay.height - 58, 0.42, YELLOW)
     return canvas, lay
 
 
 # --------------------------------------------------------------------------
 # Loop de OpenCV (delgado)
 # --------------------------------------------------------------------------
-KEY_ENTER, KEY_ESC, KEY_BACKSPACE = 13, 27, 8
-KEY_LEFT, KEY_RIGHT = 2424832, 2555904
+def _preconditions(cfg: Config, names: list[str]) -> bool:
+    """Imprime el error y devuelve ``False`` si la ventana no puede abrirse."""
+    if not names:
+        print("ERROR: no hay fotogramas. Corre primero extract y qc.")
+    elif not cfg.roi.is_valid():
+        print("ERROR: la corrida no tiene ROI. Corre primero: python -m spectro calibrate")
+    return bool(names) and cfg.roi.is_valid()
+
+
+def _view(s: TeachSession) -> TeachView:
+    gray, color, off, reading = s.frame(s.state.index)
+    return TeachView(s.state, s.cfg, s.names, gray, color, off, s.samples, reading,
+                     len(s.library), s.result, s.entries, bool(s.trash), s.test, s.reasons,
+                     s.frames_roi)
 
 
 def run_teach_ui(
     cfg: Config,
-    args,
+    params: TeachParams,
     names: list[str],
     offsets: dict,
     samples: list[T.Sample],
     test: list[T.Sample] | None = None,
-    motivos: dict[str, str] | None = None,
+    reasons: dict[str, str] | None = None,
     target: str = "train",
 ) -> int:
     """Abre la ventana de ``teach``. Entrenamiento y prueba se guardan en cada cambio.
 
     ``names`` es la cola de fotogramas (todos los que pasaron QC, o los N sugeridos con
-    ``--queue``); ``motivos`` dice por que se sugirio cada uno.
+    ``--queue``); ``reasons`` dice por que se sugirio cada uno. Todo lo que decide vive
+    en ``TeachSession``: aca solo se leen eventos y se dibuja.
     """
-    from . import library as biblioteca
-
-    if not names:
-        print("ERROR: no hay fotogramas. Corre primero extract y qc.")
+    if not _preconditions(cfg, names):
         return 1
-    if not cfg.roi.is_valid():
-        print("ERROR: la corrida no tiene ROI. Corre primero: python -m spectro calibrate")
-        return 1
-    frames_dir = Path(args.frames_dir)
-    frames_roi = load_roi_sidecar(frames_dir)
-
-    def library():
-        try:
-            return biblioteca.load(args.templates_dir)
-        except FileNotFoundError:
-            return []
-
-    h = {"samples": list(samples), "test": list(test or []), "lib": library(), "result": [],
-         "frame": None, "layout": layout_teach(), "entries": [], "trash": []}
-    motivos = motivos or {}
-    h["state"] = go_to(TeachState(index=len(names) // 2, target=target),
-                       h["samples"] + h["test"], names, len(names) // 2)
-
-    def frame_for(index: int):
-        if h["frame"] is None or h["frame"][0] != index:
-            path = frames_dir / names[index]
-            gray = load_frame(path, cfg)
-            color = load_frame(path, cfg, color=True)
-            off = offsets.get(names[index], (0, 0))
-            reading = read_frame(gray, cfg, h["lib"], frames_roi, off) if h["lib"] else None
-            h["frame"] = (index, gray, color, off, reading)
-        return h["frame"]
-
-    def persist():
-        T.save_truth(args.truth, h["samples"])
-        if h["test"] or Path(args.test).exists():
-            T.save_truth(args.test, h["test"])
-
-    def refresh_library() -> list[str]:
-        """Recarga la biblioteca y mide su efecto sobre las muestras (usos, errores, exactitud)."""
-        h["lib"], h["frame"] = library(), None
-        h["entries"] = biblioteca.list_entries(args.templates_dir)
-        lines: list[str] = []
-        pool, datas, _ = T.build_pool(h["samples"], cfg, frames_dir, offsets)
-        biblioteca.usage(h["entries"], datas)
-        if datas and h["lib"]:
-            vig = T.evaluate_library(datas, h["lib"], cfg)
-            lines = T.format_report(vig, "biblioteca vigente")[:3]
-        return lines
-
-    def run_request(kind: str):
-        pool, datas, errores = T.build_pool(h["samples"], cfg, frames_dir, offsets)
-        lines = [f"muestra descartada: {e}" for e in errores]
-        if not datas:
-            h["result"] = lines + ["No hay muestras validas."]
-            return
-        if kind == "add_lib":
-            res = biblioteca.add(pool, args.templates_dir, args.max_per_label)
-            lines.append(f"+{sum(res.new.values())} plantillas nuevas, {res.skipped} ya estaban")
-        elif kind == "replace":
-            nuevas = biblioteca.write(pool, args.templates_dir, "replace", args.max_per_label)
-            lines.append(f"biblioteca reemplazada: {sum(nuevas.values())} plantillas")
-            h["trash"] = []
-        loo = T.validate(datas, pool, cfg)
-        T.write_report(loo, args.teach_report)
-        h["result"] = lines + T.format_report(loo, "leave-one-out")[:3]
-        if kind != "validate":
-            h["result"] += refresh_library()[:1]
-
-    def run_eval() -> None:
-        from .evaluation import append_history, evaluate_test, summary_lines, write_test_report
-
-        if not h["test"]:
-            h["result"] = ["No hay muestras de prueba.", "Pone 'Conjunto: Prueba' y agrega algunas."]
-            return
-        lib = library()
-        if not lib:
-            h["result"] = ["No hay biblioteca vigente: agrega muestras a la biblioteca primero."]
-            return
-        rep = evaluate_test(h["test"], cfg, frames_dir, offsets, lib, h["samples"], args.gap)
-        write_test_report(rep, args.test_report)
-        from .library import fingerprint
-
-        append_history(args.history, rep, huella=fingerprint(args.templates_dir))
-        h["result"] = summary_lines(rep)
-
-    def library_request(kind: str, st: TeachState) -> TeachState:
-        entries = h["entries"]
-        sel = entries[st.sel] if 0 <= st.sel < len(entries) else None
-        msg = ""
-        dest = None
-        if kind == "refresh_lib":
-            h["result"] = refresh_library()
-        elif kind == "del_one" and sel:
-            h["trash"].append(biblioteca.delete([sel.path]))
-            msg = f"borrada {sel.path.name}"
-        elif kind == "del_label" and sel:
-            paths = [e.path for e in entries if e.label == sel.label]
-            h["trash"].append(biblioteca.delete(paths))
-            msg = f"borradas {len(paths)} plantillas de '{sel.label}'"
-        elif kind == "undo":
-            if h["trash"]:
-                n = biblioteca.restore(h["trash"].pop())
-                msg = f"restauradas {n} plantillas"
-            else:
-                msg = "nada que deshacer"
-        elif kind.startswith("relabel:") and sel:
-            try:
-                dest = biblioteca.relabel(sel.path, kind[8:], args.templates_dir)
-                msg = f"{sel.path.name} -> {dest.name}"
-            except ValueError as exc:
-                msg = str(exc)
-        if kind != "refresh_lib":
-            h["result"] = refresh_library()
-            st = replace(st, sel=_reselect(st, dest))
-        return replace(st, message=msg, page=min(st.page, max((len(h["entries"]) - 1) // PER_PAGE, 0)))
-
-    def _reselect(st, dest) -> int:
-        """Despues de un cambio, deja elegida una plantilla razonable."""
-        entries = h["entries"]
-        if not entries:
-            return 0
-        if dest is not None:
-            for i, e in enumerate(entries):
-                if e.path == dest:
-                    return i
-        return min(st.sel, len(entries) - 1)
+    s = TeachSession(cfg, params, names, offsets, samples, test, reasons, target)
+    title, lay = "spectro teach", [layout_teach()]
 
     def on_mouse(event, mx, my, flags, _param):
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
-        action = hit_test(h["layout"], mx, my)
-        if action:
-            do(action)
+        if event == cv2.EVENT_LBUTTONDOWN and (action := hit_test(lay[0], mx, my)):
+            s.act(action)
 
-    def do(action: str):
-        st = h["state"]
-        name = names[st.index]
-        n_lib = len(h["entries"])
-        if st.mode == "muestras" and action == "random":
-            h["state"] = go_to(st, h["samples"] + h["test"], names, random.randrange(len(names)))
-        elif st.mode == "muestras" and action in ("prev", "next", "jump-10", "jump+10"):
-            h["state"] = go_to(st, h["samples"] + h["test"], names,
-                               apply_action(st, action, len(names)).index)
-        elif st.mode == "muestras" and action == "add":
-            h["samples"], h["test"], msg = add_to_set(
-                h["samples"], h["test"], name, st.text, cfg.digits, st.target)
-            h["state"] = replace(st, message=msg)
-            persist()
-            if msg.startswith(("muestra", "agregada")):
-                h["state"] = go_to(h["state"], h["samples"] + h["test"], names, st.index + 1)
-                h["state"] = replace(h["state"], message=msg)
-        elif st.mode == "muestras" and action == "remove":
-            h["samples"] = remove_sample(h["samples"], name)
-            h["test"] = remove_sample(h["test"], name)
-            h["state"] = replace(st, text="", message="muestra quitada")
-            persist()
-        else:
-            h["state"] = apply_action(st, action, len(names), n_lib)
-
-    title = "spectro teach"
-    cv2.namedWindow(title, cv2.WINDOW_AUTOSIZE)
-    cv2.setMouseCallback(title, on_mouse)
-
-    def draw(st: TeachState):
-        _, gray, color, off, reading = frame_for(st.index)
-        view = TeachView(st, cfg, names, gray, color, off, h["samples"], reading,
-                         len(h["lib"]), h["result"], h["entries"], bool(h["trash"]),
-                         h["test"], motivos, frames_roi)
-        canvas, h["layout"] = render_teach(view)
+    def draw() -> None:
+        canvas, lay[0] = render_teach(_view(s))
         cv2.imshow(title, canvas)
 
+    open_window(title, on_mouse)
     try:
         while True:
-            st = h["state"]
-            if st.request:
-                kind = st.request
-                h["state"] = st = replace(st, request="", message="trabajando...")
-                if kind == "eval":
-                    draw(st)
-                    cv2.waitKey(1)
-                    run_eval()
-                    h["state"] = st = replace(st, message="")
-                elif kind in ("validate", "add_lib", "replace"):
-                    draw(st)
-                    cv2.waitKey(1)
-                    run_request(kind)
-                    h["state"] = st = replace(st, message="")
-                else:
-                    h["state"] = st = library_request(kind, replace(st, message=""))
-            draw(st)
-            k = cv2.waitKeyEx(30)
-            if k != -1:
-                kk = k & 0xFF
-                lib_mode = h["state"].mode == "biblioteca"
-                if k == KEY_LEFT:
-                    do("page-" if lib_mode else "prev")
-                elif k == KEY_RIGHT:
-                    do("page+" if lib_mode else "next")
-                elif kk == KEY_ESC:
-                    if lib_mode:
-                        do("samples")
-                    else:
-                        break
-                elif not lib_mode:
-                    if kk == KEY_ENTER:
-                        do("add")
-                    elif kk == KEY_BACKSPACE:
-                        do("back")
-                    elif 0 < kk < 128 and chr(kk) in "0123456789.-":
-                        do(f"key:{chr(kk)}")
-            if h["state"].done or cv2.getWindowProperty(title, cv2.WND_PROP_VISIBLE) < 1:
+            kind = s.begin_request()
+            if s.is_slow(kind):
+                draw()
+                cv2.waitKey(1)
+            if kind:
+                s.run_request(kind)
+            draw()
+            if (k := cv2.waitKeyEx(30)) != -1:
+                s.on_key(k)
+            if s.state.done or window_closed(title):
                 break
     finally:
         cv2.destroyAllWindows()
-        persist()
-    print(f"{len(h['samples'])} muestras de entrenamiento en {args.truth}; "
-          f"{len(h['test'])} de prueba en {args.test}")
+        s.persist()
+    print(f"{len(s.samples)} muestras de entrenamiento en {params.truth}; "
+          f"{len(s.test)} de prueba en {params.test}")
+    if s.backup_path is not None:
+        print(f"respaldo de la biblioteca previa a la sesion (tomado antes del primer cambio): "
+              f"{s.backup_path.name}   (para deshacer: python -m spectro teach lib restore)")
     return 0

@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import cv2
 
-from spectro import teach as T
+from spectro import library, teach as T
 from spectro.calib_ui import hit_test
 from spectro.library import template_path
+from spectro.teach_session import PER_PAGE, TeachState, apply_action
 from spectro.teach_ui import (
     HEIGHT,
     PANEL_W,
-    PER_PAGE,
     VIEW_W,
-    TeachState,
     TeachView,
-    apply_action,
     layout_teach,
     render_teach,
     tile_rect,
@@ -35,7 +33,7 @@ def test_otra_accion_cancela_la_confirmacion():
 
 
 def test_borrar_necesita_biblioteca_y_confirmacion():
-    s = TeachState(mode="biblioteca")
+    s = TeachState(mode="library")
     assert apply_action(s, "del_one", 3, n_lib=0) == s  # nada que borrar
     armado = apply_action(s, "del_one", 3, n_lib=5)
     assert armado.confirm == "del_one" and armado.request == ""
@@ -46,8 +44,8 @@ def test_borrar_necesita_biblioteca_y_confirmacion():
 
 def test_alternar_modo_paginas_y_seleccion():
     s = apply_action(TeachState(), "lib", 3)
-    assert s.mode == "biblioteca" and s.request == "refresh_lib"
-    assert apply_action(s, "samples", 3).mode == "muestras"
+    assert s.mode == "library" and s.request == "refresh_lib"
+    assert apply_action(s, "samples", 3).mode == "samples"
     n = PER_PAGE * 2 + 3
     p = apply_action(s, "page+", 3, n_lib=n)
     assert p.page == 1
@@ -58,12 +56,12 @@ def test_alternar_modo_paginas_y_seleccion():
     assert apply_action(p, "tile:2", 3, n_lib=n).sel == PER_PAGE + 2
     assert apply_action(s, "tile:50", 3, n_lib=5) == s  # mas alla de lo que hay
     assert apply_action(s, "relabel:7", 3, n_lib=5).request == "relabel:7"
-    vacio = TeachState(mode="biblioteca")
+    vacio = TeachState(mode="library")
     assert apply_action(vacio, "relabel:7", 3, n_lib=0).request == ""
 
 
 def test_layout_biblioteca_sin_solapamientos():
-    lay = layout_teach(mode="biblioteca", n_tiles=PER_PAGE, sel_label="7")
+    lay = layout_teach(mode="library", n_tiles=PER_PAGE, sel_label="7")
     for b in lay.buttons:
         assert hit_test(lay, *b.center) == b.action
         assert b.x + b.w <= VIEW_W + PANEL_W and b.y + b.h <= HEIGHT
@@ -88,19 +86,19 @@ def test_layout_muestras_tiene_los_botones_de_biblioteca():
 def test_render_biblioteca_smoke(cfg_sign, library_sign, tmp_path):
     for t in library_sign:
         cv2.imwrite(str(template_path(t.label, 0, tmp_path)), t.image)
-    entries = T.list_library(tmp_path)
+    entries = library.list_entries(tmp_path)
     entries[0].errors = 2
     entries[1].uses = 3
     names = ["t_0000001.000.jpg"]
     estados = (
-        TeachState(mode="biblioteca"),
-        TeachState(mode="biblioteca", sel=2, confirm="del_one"),
-        TeachState(mode="biblioteca", page=3),
+        TeachState(mode="library"),
+        TeachState(mode="library", sel=2, confirm="del_one"),
+        TeachState(mode="library", page=3),
     )
     for state in estados:
         view = TeachView(state, cfg_sign, names, None, None, (0, 0), [], None, len(entries),
                          ["biblioteca vigente: 1/1 lecturas exactas"], entries, True)
         canvas, _ = render_teach(view)
         assert canvas.shape == (HEIGHT, VIEW_W + PANEL_W, 3)
-    vacia = TeachView(TeachState(mode="biblioteca"), cfg_sign, names, None, None, (0, 0), [], None, 0)
+    vacia = TeachView(TeachState(mode="library"), cfg_sign, names, None, None, (0, 0), [], None, 0)
     render_teach(vacia)

@@ -19,7 +19,7 @@ Interfaz publica:
     extract_sample(...)          -> SampleData
     build_pool(...)              -> (pool, datas)
     parse_value(text, digits)    -> str
-    write_library(pool, directory, cfg, keep, max_per_label) -> dict[str, int]   (envoltorio de library.write)
+    write_library(pool, directory, keep, max_per_label) -> dict[str, int]   (envoltorio de library.write)
     gather_runs(runs_dir, calib_dir, exclude) -> list[RunContext]
     train(runs, templates_dir, ...) -> TrainResult    (una o varias corridas)
     validate(datas, pool, cfg)   -> ValidationReport      (leave-one-out)
@@ -38,12 +38,13 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import DEFAULT_MAX_PER_LABEL, ROI, Config, DigitsConfig  # noqa: F401
+from .compat import read_csv_rows
+from .config import DEFAULT_MAX_PER_LABEL, ROI, Config, DigitsConfig
 from .extract import load_roi_sidecar
 from . import library
 from .imaging import cell_glyphs, load_frame
-# DEDUP_NCC, LibEntry y Trashed se reexportan: el codigo vive en library.py.
-from .library import ALL_CHARS, DEDUP_NCC, AddResult, LibEntry, Template, Trashed  # noqa: F401
+# ALL_CHARS y LibEntry se reexportan: teach_cli y teach_session las toman de aca.
+from .library import ALL_CHARS, LibEntry, Template  # noqa: F401
 from .project import CalibPaths, RunContext, RunPaths, list_runs
 
 _VALUE_RE = re.compile(r"^(-)?(\d*)(?:\.(\d+))?$")
@@ -53,8 +54,8 @@ _VALUE_RE = re.compile(r"^(-)?(\d*)(?:\.(\d+))?$")
 class Sample:
     """Un fotograma y el valor que el usuario leyo en el display."""
 
-    archivo: str
-    valor: str
+    file: str
+    value: str
 
 
 @dataclass
@@ -83,18 +84,18 @@ class SampleData:
 
     @property
     def ident(self) -> str:
-        return self.key or self.sample.archivo
+        return self.key or self.sample.file
 
 
 @dataclass
 class SampleResult:
-    archivo: str
-    escrito: str
-    leido: str
-    confianza: float
-    estado: str
-    coincide: bool
-    faltan: list[str] = field(default_factory=list)
+    file: str
+    typed: str
+    read_value: str
+    confidence: float
+    status: str
+    matches: bool
+    missing: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -108,11 +109,11 @@ class ValidationReport:
 
     @property
     def exact(self) -> int:
-        return sum(1 for r in self.results if r.coincide)
+        return sum(1 for r in self.results if r.matches)
 
     @property
     def mismatches(self) -> list[SampleResult]:
-        return [r for r in self.results if not r.coincide]
+        return [r for r in self.results if not r.matches]
 
 
 # --------------------------------------------------------------------------
@@ -122,8 +123,7 @@ def load_truth(path: Path | str) -> list[Sample]:
     path = Path(path)
     if not path.exists():
         return []
-    with path.open(encoding="utf-8", newline="") as fh:
-        return [Sample(r["archivo"], r["valor"]) for r in csv.DictReader(fh) if r.get("archivo")]
+    return [Sample(r["file"], r["value"]) for r in read_csv_rows(path) if r.get("file")]
 
 
 def save_truth(path: Path | str, samples: list[Sample]) -> Path:
@@ -131,9 +131,9 @@ def save_truth(path: Path | str, samples: list[Sample]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["archivo", "valor"])
-        for s in sorted(samples, key=lambda s: s.archivo):
-            writer.writerow([s.archivo, s.valor])
+        writer.writerow(["file", "value"])
+        for s in sorted(samples, key=lambda s: s.file):
+            writer.writerow([s.file, s.value])
     return path
 
 
@@ -141,8 +141,8 @@ def expected_format(digits: DigitsConfig) -> str:
     """Ejemplo legible del formato que espera la config, para los mensajes de error."""
     n = len(digits.digit_slots())
     dec = n - digits.decimal_after
-    ejemplo = "0" * digits.decimal_after + ("." + "0" * dec if dec else "")
-    return ("-" if digits.sign_slot is not None else "") + (ejemplo or "0")
+    example = "0" * digits.decimal_after + ("." + "0" * dec if dec else "")
+    return ("-" if digits.sign_slot is not None else "") + (example or "0")
 
 
 def value_to_cells(text: str, digits: DigitsConfig) -> list[str]:
@@ -192,7 +192,7 @@ def coverage(samples: list[Sample], digits: DigitsConfig) -> dict[str, int]:
     out = {c: 0 for c in ALL_CHARS}
     for s in samples:
         try:
-            for ch in value_to_cells(s.valor, digits):
+            for ch in value_to_cells(s.value, digits):
                 if ch in out:
                     out[ch] += 1
         except ValueError:
@@ -226,15 +226,15 @@ def extract_sample(
     frames_roi=None,
     prefix: str = "",
 ) -> SampleData:
-    cells = value_to_cells(sample.valor, cfg.digits)
-    gray = load_frame(Path(frames_dir) / sample.archivo, cfg)
+    cells = value_to_cells(sample.value, cfg.digits)
+    gray = load_frame(Path(frames_dir) / sample.file, cfg)
     images = slot_glyphs(gray, cfg, offset, frames_roi)
     glyphs = [
-        Glyph(label=ch, image=img, source=prefix + sample.archivo)
+        Glyph(label=ch, image=img, source=prefix + sample.file)
         for ch, img in zip(cells, images)
         if ch != " "  # la celda de signo vacia se resuelve por tinta, no por plantilla
     ]
-    return SampleData(sample, cells, glyphs, gray, offset, prefix + sample.archivo, cfg,
+    return SampleData(sample, cells, glyphs, gray, offset, prefix + sample.file, cfg,
                       frames_roi)
 
 
@@ -249,35 +249,28 @@ def build_pool(
     frames_roi = load_roi_sidecar(frames_dir)
     pool: list[Glyph] = []
     datas: list[SampleData] = []
-    errores: list[str] = []
+    errors: list[str] = []
     for s in samples:
         try:
-            d = extract_sample(s, cfg, frames_dir, (offsets or {}).get(s.archivo, (0, 0)),
+            d = extract_sample(s, cfg, frames_dir, (offsets or {}).get(s.file, (0, 0)),
                                frames_roi, prefix)
         except (ValueError, RuntimeError) as exc:
-            errores.append(f"{s.archivo}: {exc}")
+            errors.append(f"{s.file}: {exc}")
             continue
         datas.append(d)
         pool.extend(d.glyphs)
-    return pool, datas, errores
+    return pool, datas, errors
 
 
 def write_library(
-    pool: list[Glyph], directory: Path | str, cfg: Config, keep: bool = False,
+    pool: list[Glyph], directory: Path | str, keep: bool = False,
     max_per_label: int = DEFAULT_MAX_PER_LABEL,
 ) -> dict[str, int]:
     """Escribe la biblioteca en ``directory``. Reemplaza, salvo ``keep``.
 
-    Envoltorio de ``library.write``; ``cfg`` ya no se usa y queda por compatibilidad.
+    Envoltorio de ``library.write``.
     """
     return library.write(pool, directory, "merge" if keep else "replace", max_per_label)
-
-
-def add_to_library(
-    pool: list[Glyph], directory: Path | str, cfg: Config, max_per_label: int = DEFAULT_MAX_PER_LABEL
-) -> AddResult:
-    """Suma a la biblioteca existente sin duplicar. Envoltorio de ``library.add``."""
-    return library.add(pool, directory, max_per_label)
 
 
 # --------------------------------------------------------------------------
@@ -317,34 +310,33 @@ def build_pool_runs(
     """
     pool: list[Glyph] = []
     datas: list[SampleData] = []
-    errores: list[str] = []
+    errors: list[str] = []
     for run in runs:
         prefix = f"{run.run_id}/" if prefixed else ""
         p, d, e = build_pool(run.train, run.cfg, run.frames_dir, run.offsets, prefix)
         pool.extend(p)
         datas.extend(d)
-        errores.extend(f"{prefix}{x}" for x in e)
-    return pool, datas, errores
+        errors.extend(f"{prefix}{x}" for x in e)
+    return pool, datas, errors
 
 
 @dataclass
 class TrainResult:
     """Lo que dejo ``train``: los glifos, la cobertura, la biblioteca escrita y las dos validaciones."""
 
-    pool: list[Glyph]
     datas: list[SampleData]
-    errores: list[str]
+    errors: list[str]
     #: Cuantas celdas de las muestras tiene cada caracter.
     coverage: dict[str, int] = field(default_factory=dict)
     #: Caracteres que la geometria necesita y ninguna muestra trae.
-    faltan: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
     #: Plantillas escritas por caracter; ``None`` si no se pidio escribir.
-    nuevas: dict[str, int] | None = None
+    added: dict[str, int] | None = None
     loo: ValidationReport | None = None
     #: Lectura con la biblioteca vigente; ``None`` si todavia no hay biblioteca.
-    vigente: ValidationReport | None = None
+    current: ValidationReport | None = None
     #: Aviso de ``library.warn_missing_sign`` sobre la biblioteca vigente (``None`` si no aplica).
-    aviso_signo: str | None = None
+    sign_warning: str | None = None
 
 
 def train(
@@ -362,8 +354,8 @@ def train(
     que quien llama lo muestre. Si ninguna muestra se pudo procesar, ``datas`` queda vacio
     y no se toca la biblioteca.
     """
-    pool, datas, errores = build_pool_runs(runs, prefixed)
-    res = TrainResult(pool, datas, errores)
+    pool, datas, errors = build_pool_runs(runs, prefixed)
+    res = TrainResult(datas, errors)
     if not datas:
         return res
     cfg = runs[0].cfg
@@ -372,42 +364,32 @@ def train(
         for ch in d.cells:
             if ch in res.coverage:
                 res.coverage[ch] += 1
-    res.faltan = [k for k, v in res.coverage.items()
+    res.missing = [k for k, v in res.coverage.items()
                   if v == 0 and any(k in r.cfg.digits.required_chars() for r in runs)]
     if build:
-        res.nuevas = write_library(pool, templates_dir, cfg, keep, max_per_label)
+        res.added = write_library(pool, templates_dir, keep, max_per_label)
     res.loo = validate(datas, pool, cfg)
     try:
-        vigente = library.load(templates_dir)
+        current = library.load(templates_dir)
     except FileNotFoundError:
-        res.vigente = None
+        res.current = None
     else:
-        res.vigente = evaluate_library(datas, vigente, cfg)
-        res.aviso_signo = next(
-            (a for a in (library.warn_missing_sign(r.cfg, vigente) for r in runs) if a), None)
+        res.current = evaluate_library(datas, current, cfg)
+        res.sign_warning = next(
+            (a for a in (library.warn_missing_sign(r.cfg, current) for r in runs) if a), None)
     return res
 
 
 def split_by_run(report: ValidationReport, run_id: str) -> ValidationReport:
     """El pedazo de un informe conjunto que corresponde a ``run_id`` (sin el prefijo)."""
-    prefijo = f"{run_id}/"
+    prefix = f"{run_id}/"
     sub = ValidationReport()
     for res in report.results:
-        if res.archivo.startswith(prefijo):
+        if res.file.startswith(prefix):
             sub.results.append(SampleResult(
-                res.archivo[len(prefijo):], res.escrito, res.leido, res.confianza, res.estado,
-                res.coincide, res.faltan))
+                res.file[len(prefix):], res.typed, res.read_value, res.confidence, res.status,
+                res.matches, res.missing))
     return sub
-
-
-# --------------------------------------------------------------------------
-# Gestion de la biblioteca (los nombres viejos; el codigo vive en ``library``)
-# --------------------------------------------------------------------------
-list_library = library.list_entries
-library_usage = library.usage
-delete_templates = library.delete
-restore = library.restore
-relabel_template = library.relabel
 
 
 # --------------------------------------------------------------------------
@@ -420,8 +402,8 @@ def validate(datas: list[SampleData], pool: list[Glyph], cfg: Config) -> Validat
     def library_for(d: SampleData):
         others = [g for g in pool if g.source != d.ident]
         present = {g.label for g in others}
-        faltan = sorted({ch for ch in d.cells if ch != " "} - present)
-        return [Template(g.label, g.image, None, g.source) for g in others], faltan
+        missing = sorted({ch for ch in d.cells if ch != " "} - present)
+        return [Template(g.label, g.image, None, g.source) for g in others], missing
 
     return to_validation(evaluate(datas, library_for, cfg, skip_empty=True))
 
@@ -438,10 +420,10 @@ def write_report(report: ValidationReport, path: Path | str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["archivo", "escrito", "leido", "confianza", "estado", "coincide", "faltan"])
+        w.writerow(["file", "typed", "read_value", "confidence", "status", "matches", "missing"])
         for r in report.results:
-            w.writerow([r.archivo, r.escrito, r.leido, f"{r.confianza:.3f}", r.estado,
-                        int(r.coincide), "".join(r.faltan)])
+            w.writerow([r.file, r.typed, r.read_value, f"{r.confidence:.3f}", r.status,
+                        int(r.matches), "".join(r.missing)])
     return path
 
 
@@ -449,9 +431,9 @@ def format_report(report: ValidationReport, title: str = "validacion") -> list[s
     """Las lineas que se imprimen (y se muestran en la UI) tras validar."""
     lines = [f"{title}: {report.exact}/{report.total} lecturas exactas"]
     for r in report.mismatches[:10]:
-        extra = f"  (sin ejemplos de {''.join(r.faltan)!r} en las demas muestras)" if r.faltan else ""
-        lines.append(f"  {r.archivo}: escribiste {r.escrito!r}, el lector leyo {r.leido!r} "
-                     f"[{r.estado}, conf {r.confianza:.2f}]{extra}")
+        extra = f"  (sin ejemplos de {''.join(r.missing)!r} en las demas muestras)" if r.missing else ""
+        lines.append(f"  {r.file}: escribiste {r.typed!r}, el lector leyo {r.read_value!r} "
+                     f"[{r.status}, conf {r.confidence:.2f}]{extra}")
     if len(report.mismatches) > 10:
         lines.append(f"  ... y {len(report.mismatches) - 10} mas (ver teach_report.csv)")
     if report.confusion:

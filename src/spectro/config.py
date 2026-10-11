@@ -20,6 +20,8 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from .compat import normalize_config
+
 DEFAULT_CONFIG_PATH = Path("config.json")
 
 #: Tope de variantes por caracter en la biblioteca (lo usan el CLI de ``teach`` y la UI). Vive
@@ -116,8 +118,6 @@ class TemplateConfig:
     min_score: float = 0.60
     #: Margen minimo entre el mejor y el segundo mejor digito distinto.
     min_margin: float = 0.05
-    #: Umbral de distancia de hash perceptual para agrupar glifos iguales.
-    cluster_hamming: int = 6
 
 
 @dataclass
@@ -169,7 +169,7 @@ class ReadConfig:
 
 @dataclass
 class AcceptanceConfig:
-    """Umbrales del veredicto ``acepta`` / ``revisar`` del reporte de ``batch``.
+    """Umbrales del veredicto ``accept`` / ``review`` del reporte de ``batch``.
 
     Son fracciones en [0, 1]. **No tienen valores por defecto**: ``None`` significa "sin
     umbral", y si ninguno esta fijado el veredicto queda vacio. Los fija el usuario con
@@ -177,14 +177,14 @@ class AcceptanceConfig:
     """
 
     #: Exactitud minima sobre ``test.csv`` (correctas / muestras de prueba).
-    min_exactitud: float | None = None
+    min_accuracy: float | None = None
     #: Error maximo entre las lecturas aceptadas de ``test.csv`` (erroneas / aceptadas).
     max_error: float | None = None
     #: Cobertura minima de la corrida (lecturas ``ok`` / fotogramas extraidos).
-    min_cobertura: float | None = None
+    min_coverage: float | None = None
 
     def is_set(self) -> bool:
-        return any(v is not None for v in (self.min_exactitud, self.max_error, self.min_cobertura))
+        return any(v is not None for v in (self.min_accuracy, self.max_error, self.min_coverage))
 
 
 @dataclass
@@ -212,7 +212,7 @@ class Config:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
-        return _build(cls, data)
+        return _build(cls, normalize_config(data))
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
