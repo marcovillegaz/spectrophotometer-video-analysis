@@ -28,7 +28,7 @@ Interfaz publica:
     evaluate_test(...)                         -> TestReport      (envoltorio)
     format_test_report(report)                 -> list[str]
     write_test_report(report, path)            -> Path
-    append_history(path, report, ...)          -> Path
+    append_history(path, report, when, huella) -> Path   (columna ``huella`` al final; tolera historiales viejos)
     load_history(path)                         -> list[dict]
 """
 
@@ -50,7 +50,7 @@ from .teach import Sample, SampleData, SampleResult, ValidationReport, build_poo
 #: Cabecera de ``teach_history.csv``: una fila por evaluacion.
 HISTORY_FIELDS = [
     "fecha", "tipo", "plantillas", "entrenamiento", "prueba", "valores_distintos",
-    "correctas", "erroneas", "descartadas", "exactitud", "error_aceptadas", "cobertura",
+    "correctas", "erroneas", "descartadas", "exactitud", "error_aceptadas", "cobertura", "huella",
 ]
 
 
@@ -297,11 +297,25 @@ def write_test_report(report: TestReport, path: Path | str) -> Path:
     return path
 
 
-def append_history(path: Path | str, report: TestReport, when: datetime | None = None) -> Path:
-    """Agrega una fila al historial: la curva de aprendizaje por ronda."""
+def append_history(
+    path: Path | str, report: TestReport, when: datetime | None = None, huella: str = ""
+) -> Path:
+    """Agrega una fila al historial: la curva de aprendizaje por ronda.
+
+    ``huella`` es la de la biblioteca con la que se evaluo (``library.fingerprint``). Un
+    historial anterior a esa columna se completa con valores vacios antes de agregar.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     nuevo = not path.exists()
+    if not nuevo:
+        viejas = load_history(path)
+        if viejas and "huella" not in viejas[0]:
+            with path.open("w", encoding="utf-8", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(HISTORY_FIELDS)
+                for f in viejas:
+                    w.writerow([f.get(k, "") for k in HISTORY_FIELDS])
     with path.open("a", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh)
         if nuevo:
@@ -311,6 +325,7 @@ def append_history(path: Path | str, report: TestReport, when: datetime | None =
             report.n_templates, report.n_train, report.n, report.valores_distintos,
             report.correctas, report.erroneas, report.descartadas,
             f"{report.exactitud:.4f}", f"{report.error_aceptadas:.4f}", f"{report.cobertura:.4f}",
+            huella,
         ])
     return path
 

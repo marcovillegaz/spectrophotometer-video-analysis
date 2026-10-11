@@ -8,6 +8,7 @@ Interfaz publica:
     Config.load(path)   -> Config
     Config.save(path)   -> None
     Config.default()    -> Config
+    AcceptanceConfig    (umbrales opcionales del veredicto de batch)
     DEFAULT_CONFIG_PATH
     DEFAULT_MAX_PER_LABEL
 """
@@ -167,6 +168,26 @@ class ReadConfig:
 
 
 @dataclass
+class AcceptanceConfig:
+    """Umbrales del veredicto ``acepta`` / ``revisar`` del reporte de ``batch``.
+
+    Son fracciones en [0, 1]. **No tienen valores por defecto**: ``None`` significa "sin
+    umbral", y si ninguno esta fijado el veredicto queda vacio. Los fija el usuario con
+    lo que midio (``calib/config.json``) o con los flags de ``batch``.
+    """
+
+    #: Exactitud minima sobre ``test.csv`` (correctas / muestras de prueba).
+    min_exactitud: float | None = None
+    #: Error maximo entre las lecturas aceptadas de ``test.csv`` (erroneas / aceptadas).
+    max_error: float | None = None
+    #: Cobertura minima de la corrida (lecturas ``ok`` / fotogramas extraidos).
+    min_cobertura: float | None = None
+
+    def is_set(self) -> bool:
+        return any(v is not None for v in (self.min_exactitud, self.max_error, self.min_cobertura))
+
+
+@dataclass
 class Config:
     """Configuracion completa del proyecto, serializada como ``config.json``."""
 
@@ -181,6 +202,8 @@ class Config:
     qc: QCConfig = field(default_factory=QCConfig)
     time: TimeConfig = field(default_factory=TimeConfig)
     read: ReadConfig = field(default_factory=ReadConfig)
+    #: Criterio de aceptacion del reporte de ``batch``; solo se lee de ``calib/config.json``.
+    acceptance: AcceptanceConfig = field(default_factory=AcceptanceConfig)
 
     # -- serializacion ----------------------------------------------------
     @classmethod
@@ -242,6 +265,7 @@ def _build(cls, data: Any):
         "qc": QCConfig,
         "time": TimeConfig,
         "read": ReadConfig,
+        "acceptance": AcceptanceConfig,
         "anchor": ROI,
     }
     for name, sub in nested.items():

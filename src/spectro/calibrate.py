@@ -268,7 +268,10 @@ def _promote(calib: CalibPaths, cfg: Config, frame_path: Path) -> None:
     from .project import calib_recipe
 
     calib.root.mkdir(parents=True, exist_ok=True)
-    calib_recipe(cfg).save(calib.config)
+    receta = calib_recipe(cfg)
+    if calib.config.exists():  # el criterio de aceptacion es de la calib: promover no lo pisa
+        receta.acceptance = Config.load(calib.config).acceptance
+    receta.save(calib.config)
     shutil.copyfile(frame_path, calib.reference)
     print(
         f"  --promote: {calib.config} y {calib.reference} actualizados "

@@ -18,6 +18,7 @@ Interfaz publica:
     RunPaths.for_run(run_id, ...)           -> RunPaths
     CalibPaths.at(...)                      -> CalibPaths
     list_runs(...)                          -> list[str]
+    require_run(run_id, ...)                -> RunPaths   (falla si la corrida no existe)
     seed_run_config(calib_cfg, video, fps)  -> Config
     calib_recipe(run_cfg)                   -> Config
     RunContext.load(run_paths, calib_paths) -> RunContext
@@ -29,7 +30,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import ROI, Config, QCConfig
+from .config import ROI, AcceptanceConfig, Config, QCConfig
 
 #: Nombres por defecto de las tres carpetas de primer nivel.
 CALIB_DIR = Path("calib")
@@ -157,6 +158,11 @@ class RunPaths:
         return self.out / "readings.csv"
 
     @property
+    def read_meta(self) -> Path:
+        """Huella de la biblioteca con la que ``read`` produjo ``readings.csv``."""
+        return self.out / "read_meta.json"
+
+    @property
     def absorbance(self) -> Path:
         return self.out / "absorbancia.csv"
 
@@ -215,6 +221,22 @@ def list_runs(base: Path | str = Path("."), runs_dir: Path | str = RUNS_DIR) -> 
     )
 
 
+def require_run(
+    run_id: str, runs_dir: Path | str = RUNS_DIR, calib_dir: Path | str = CALIB_DIR
+) -> RunPaths:
+    """Las rutas de una corrida que **existe**; si no, el error lista las disponibles.
+
+    Adivinar la corrida mezclaria datos de dos experimentos en silencio, asi que el id
+    siempre es explicito y un id mal tipeado se rechaza con las opciones a la vista.
+    """
+    run = RunPaths.for_run(run_id, runs_dir=runs_dir, calib_dir=calib_dir)
+    if not run.exists():
+        corridas = list_runs(runs_dir=runs_dir)
+        disponibles = ", ".join(corridas) if corridas else "ninguna"
+        raise ValueError(f"No existe la corrida {run_id!r} en {runs_dir}/. Disponibles: {disponibles}")
+    return run
+
+
 def seed_run_config(calib_config: Config, video: Path | str, fps: float) -> Config:
     """Config inicial de una corrida: la receta compartida + su video y fps.
 
@@ -230,6 +252,7 @@ def seed_run_config(calib_config: Config, video: Path | str, fps: float) -> Conf
     cfg.roi = ROI()
     cfg.qc.anchor = ROI()
     cfg.qc.reference_frame = ""
+    cfg.acceptance = AcceptanceConfig()  # el criterio de aceptacion es de la calib, no de la corrida
     limpios = QCConfig()
     for campo in _PER_RUN_QC_FIELDS:
         setattr(cfg.qc, campo, getattr(limpios, campo))

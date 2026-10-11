@@ -20,13 +20,20 @@ Interfaz publica:
     read_frame(gray, cfg, library, frames_roi) -> Reading
     assemble(digits, decimal_after) -> float
     load_readings(path) -> list[Reading]
+    write_read_meta(path, templates_dir, n) / load_read_meta(path)   (huella de la biblioteca)
+    outputs_state(readings, templates_dir) -> str   (al_dia | desactualizadas | sin_huella | sin_lectura)
+
+``run_read`` escribe ``read_meta.json`` junto a ``readings.csv``: ``huella`` de la biblioteca,
+``fecha`` y cantidad de ``plantillas``. El formato de ``readings.csv`` no cambia.
 """
 
 from __future__ import annotations
 
 import csv
+import json
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -35,10 +42,11 @@ from .config import Config
 from .extract import FRAMES_DIR, load_roi_sidecar
 from .imaging import cell_glyphs, load_frame, ncc
 from .qc import QC_REPORT, load_qc_report, write_qc_report
-from .library import TEMPLATES_DIR, Template, load, warn_missing_sign
+from .library import TEMPLATES_DIR, Template, fingerprint, load, warn_missing_sign
 
 #: Default relativo a la raiz de la corrida; ver ``extract.FRAMES_DIR``.
 READINGS = Path("out/readings.csv")
+READ_META = Path("out/read_meta.json")
 
 
 @dataclass
@@ -228,6 +236,7 @@ def run_read(
 
     spikes = flag_spikes(readings, cfg.read.max_rate)
     write_readings(readings, output)
+    write_read_meta(Path(output).with_name(READ_META.name), templates_dir, len(library))
 
     estado_por_archivo = {r.archivo: r.estado for r in readings}
     for row in qc_rows:
@@ -274,6 +283,57 @@ def write_readings(readings: list[Reading], path: Path | str = READINGS) -> Path
                 ]
             )
     return path
+
+
+def write_read_meta(path: Path | str, templates_dir: Path | str, n_templates: int) -> Path:
+    """Guarda la huella de la biblioteca con la que se leyo (junto a ``readings.csv``)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "huella": fingerprint(templates_dir),
+        "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "plantillas": n_templates,
+    }
+    path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def load_read_meta(path: Path | str) -> dict | None:
+    """El ``read_meta.json`` de una corrida, o ``None`` si no existe o no se puede leer."""
+    path = Path(path)
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+#: Estados de las salidas de una corrida frente a la biblioteca vigente (``outputs_state``).
+SIN_LECTURA, AL_DIA, DESACTUALIZADAS, SIN_HUELLA = (
+    "sin_lectura", "al_dia", "desactualizadas", "sin_huella")
+
+
+def outputs_state(
+    readings: Path | str, templates_dir: Path | str, huella: str | None = None
+) -> str:
+    """Si ``readings.csv`` se produjo con la biblioteca de hoy.
+
+    Compara la huella de ``read_meta.json`` con la de la biblioteca. Un ``readings.csv``
+    anterior a la huella (sin ``read_meta.json``) se juzga por fecha: mas viejo que la
+    plantilla mas nueva = ``desactualizadas``; si no, ``sin_huella`` (no se sabe). ``huella``
+    evita recalcular la de la biblioteca cuando quien llama ya la tiene.
+    """
+    readings = Path(readings)
+    if not readings.exists():
+        return SIN_LECTURA
+    meta = load_read_meta(readings.with_name(READ_META.name))
+    if meta is not None:
+        actual = fingerprint(templates_dir) if huella is None else huella
+        return AL_DIA if meta.get("huella") == actual else DESACTUALIZADAS
+    plantillas = list(Path(templates_dir).glob("*.png")) if Path(templates_dir).is_dir() else []
+    if any(p.stat().st_mtime > readings.stat().st_mtime for p in plantillas):
+        return DESACTUALIZADAS
+    return SIN_HUELLA
 
 
 def load_readings(path: Path | str = READINGS) -> list[Reading]:

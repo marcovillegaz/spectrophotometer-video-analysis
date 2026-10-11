@@ -15,6 +15,7 @@ Interfaz publica:
     Template, TEMPLATES_DIR, template_path(label, n, dir), label_from_filename(path)
     load(directory)                          -> list[Template]
     warn_missing_sign(cfg, library)          -> str | None
+    fingerprint(directory)                   -> str    (huella de la biblioteca)
     write(pool, directory, mode, max_per_label) -> dict[str, int]   (replace | merge)
     add(pool, directory, max_per_label)      -> AddResult           (merge con conteo)
     dedup(pool, max_per_label)               -> list[Glyph]
@@ -134,7 +135,7 @@ def load(directory: Path | str = TEMPLATES_DIR) -> list[Template]:
     paths = sorted(directory.glob("*.png"))
     if not paths:
         raise FileNotFoundError(
-            f"No hay plantillas en {directory}. Corre primero: python -m spectro teach --run <id> --build"
+            f"No hay plantillas en {directory}. Corre primero: python -m spectro teach train"
         )
     out: list[Template] = []
     for p in paths:
@@ -155,9 +156,27 @@ def warn_missing_sign(cfg: Config, library: list[Template]) -> str | None:
         return None
     return (
         "aviso: la config tiene celda de signo pero no hay plantilla '-'. Las lecturas\n"
-        "       negativas se descartaran. Etiqueta muestras con valores negativos y\n"
-        "       reconstrui la biblioteca: python -m spectro teach --run <id> --build"
+        "       negativas se descartaran. Etiqueta muestras con valores negativos\n"
+        "       (python -m spectro teach samples label <id>) y reconstrui la biblioteca:\n"
+        "       python -m spectro teach train"
     )
+
+
+def fingerprint(directory: Path | str = TEMPLATES_DIR) -> str:
+    """Huella de la biblioteca: 12 hex del SHA-256 de los nombres y bytes de las plantillas.
+
+    Cambia si se agrega, borra, renombra o modifica cualquier plantilla. Es ``""`` si no
+    hay ninguna. ``read`` la guarda en ``out/read_meta.json`` para saber con que
+    biblioteca se produjo cada ``readings.csv``.
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    files = sorted(Path(directory).glob("*.png")) if Path(directory).is_dir() else []
+    for f in files:
+        h.update(f.name.encode("utf-8") + b"\0")
+        h.update(f.read_bytes())
+    return h.hexdigest()[:12] if files else ""
 
 
 def list_entries(directory: Path | str) -> list[LibEntry]:
@@ -398,7 +417,7 @@ def restore_backup(directory: Path | str, name: str | None = None) -> str:
     for old in directory.glob("*.png"):
         old.unlink()
     for f in src.glob("*.png"):
-        shutil.copy2(f, directory / f.name)
+        shutil.copyfile(f, directory / f.name)  # mtime nuevo: las plantillas restauradas cuentan como cambio
     for old in list_backups(directory)[:-KEEP_BACKUPS]:
         if old != name:
             shutil.rmtree(backups_root(directory) / old, ignore_errors=True)
