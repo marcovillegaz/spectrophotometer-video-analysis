@@ -52,12 +52,14 @@ def permitido(rol: str, payload: dict) -> bool:
     ("test", "tests/test_nuevo.py", True),
     ("test", "tests/conftest.py", True),
     ("test", "src/spectro/read.py", False),
-    ("test", "docs/GUIA_CALIBRACION.md", False),
+    ("test", "docs/calibrar/guia.md", False),
     ("refactor", "src/spectro/cli.py", True),
     ("refactor", "tests/test_teach.py", True),
     ("refactor", "README.md", False),
     ("writer", "README.md", True),
-    ("writer", "docs/ARQUITECTURA.md", True),
+    ("writer", "docs/diseno/arquitectura.md", True),
+    ("writer", "docs/empezar/nuevo/tema.md", True),      # subcarpetas de docs/** permitidas
+    ("writer", "docs/plans/PLAN_v6.md", True),
     ("writer", "PLAN_v6.md", True),
     ("writer", "CLAUDE.md", True),
     ("writer", "src/spectro/read.py", False),
@@ -135,7 +137,7 @@ def test_rol_desconocido_se_bloquea():
     "ls docs",
     "grep -n teach README.md",
     'grep -E "a|b" README.md',
-    "cat docs/CONFIG.md | head -20",
+    "cat docs/referencia/config.md | head -20",
     "git status && git diff --stat",
     ".venv/Scripts/python -m pytest -q 2>&1 | tail -3",
     "find docs -name '*.md'",
@@ -152,7 +154,7 @@ def test_el_writer_puede_correr_comandos_de_lectura(comando):
     "cp README.md x.md",
     "echo hola > README.md",
     "echo hola >> README.md",
-    "cat docs/CONFIG.md > otro.md",
+    "cat docs/referencia/config.md > otro.md",
     "sed -i 's/a/b/' README.md",
     "tee README.md",
     "git commit -am x",
@@ -198,7 +200,7 @@ def _hook(rol: str, payload: dict, cwd: Path = RAIZ):
 
 
 def test_hook_real_codigo_de_salida_y_mensaje():
-    ok = _hook("writer", escribir("Edit", "docs/CONFIG.md"))
+    ok = _hook("writer", escribir("Edit", "docs/referencia/config.md"))
     assert ok.returncode == 0 and ok.stderr == ""
     no = _hook("writer", escribir("Edit", "src/spectro/read.py"))
     assert no.returncode == 2 and "developer" in no.stderr
@@ -214,7 +216,7 @@ def test_hook_real_tolera_el_bom_de_powershell_y_rutas_con_tildes():
         return subprocess.run([sys.executable, str(GUARD), rol], input=datos, capture_output=True, cwd=RAIZ,
                               env={"CLAUDE_PROJECT_DIR": str(RAIZ), "PATH": ""})
 
-    assert correr(escribir("Edit", "docs/CONFIG.md"), "writer").returncode == 0
+    assert correr(escribir("Edit", "docs/referencia/config.md"), "writer").returncode == 0
     assert correr(escribir("Edit", "src/spectro/read.py"), "writer").returncode == 2
     assert correr(escribir("Write", "docs/guía_añadida.md"), "writer").returncode == 0     # tildes y eñes
     assert correr(escribir("Write", "src/guía.py"), "writer").returncode == 2

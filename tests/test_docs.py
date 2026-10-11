@@ -12,6 +12,7 @@ Si falla despues de cambiar el CLI: hay que actualizar la documentacion (agente 
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,60 @@ def test_todos_los_enlaces_de_la_documentacion_existen():
     problemas, revisados = check_docs.revisar_enlaces(RAIZ)
     assert revisados >= 5
     assert not problemas, "\n".join(problemas)
+
+
+def huerfanos(raiz: Path) -> list[str]:
+    """Los .md de ``docs/`` (sin historia/ ni plans/) que el README no enlaza con un enlace relativo.
+
+    Romperia el test: un documento nuevo sin fila en el README, o un enlace que no resuelve a el.
+    """
+    texto = re.sub(r"```.*?```", "", (raiz / "README.md").read_text(encoding="utf-8"), flags=re.S)
+    enlazados = set()
+    for m in check_docs._ENLACE.finditer(texto):
+        ruta = m.group(1).partition("#")[0]
+        if ruta and not re.match(r"^[a-z]+:", ruta):
+            enlazados.add((raiz / ruta).resolve())
+    docs = [p for p in check_docs.documentos(raiz) if p.parent != raiz and p.is_relative_to(raiz / "docs")]
+    return [p.relative_to(raiz).as_posix() for p in docs if p.resolve() not in enlazados]
+
+
+def test_todo_documento_de_docs_esta_enlazado_desde_el_readme():
+    assert not huerfanos(RAIZ), "documentos sin enlace desde README.md: " + ", ".join(huerfanos(RAIZ))
+
+
+def test_el_readme_sin_una_fila_deja_huerfano_al_documento(tmp_path):
+    """Mutacion: copia del README real sin los enlaces a un documento => aparece como huerfano."""
+    real = (RAIZ / "README.md").read_text(encoding="utf-8")
+    destino = next(p for p in check_docs.documentos(RAIZ) if p.parent.name == "referencia")
+    rel = destino.relative_to(RAIZ).as_posix()
+    assert rel in real
+    assert huerfanos(RAIZ) == []
+    (tmp_path / "docs").mkdir()
+    for p in check_docs.documentos(RAIZ):
+        if p.is_relative_to(RAIZ / "docs"):
+            (tmp_path / p.relative_to(RAIZ)).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / p.relative_to(RAIZ)).write_text("# x\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text(real, encoding="utf-8")
+    assert huerfanos(tmp_path) == []
+    (tmp_path / "README.md").write_text(real.replace(rel, "docs/otro.md"), encoding="utf-8")
+    assert huerfanos(tmp_path) == [rel]
+
+
+def test_huerfanos_en_proyecto_de_juguete(tmp_path):
+    raiz = _raiz(tmp_path, "[a](docs/a/uno.md#x) [web](https://e.com/dos.md)\n```\n[c](docs/a/tres.md)\n```\n")
+    for rel in ("a/uno.md", "a/dos.md", "a/tres.md", "historia/viejo.md", "plans/p.md"):
+        (raiz / "docs" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (raiz / "docs" / rel).write_text("# t\n", encoding="utf-8")
+    assert huerfanos(raiz) == ["docs/a/dos.md", "docs/a/tres.md"]
+
+
+def test_documentos_ve_subcarpetas_y_excluye_historia_y_plans(tmp_path):
+    raiz = _raiz(tmp_path, "# r\n", {"CLAUDE.md": "# c\n"})
+    for rel in ("raiz.md", "a/b/hondo.md", "historia/viejo.md", "plans/p.md", "a/historia/anidado.md", "a/nota.txt"):
+        (raiz / "docs" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (raiz / "docs" / rel).write_text("# t\n", encoding="utf-8")
+    vistos = [p.relative_to(raiz).as_posix() for p in check_docs.documentos(raiz)]
+    assert vistos == ["README.md", "CLAUDE.md", "docs/a/b/hondo.md", "docs/raiz.md"]
 
 
 # -- el verificador en si ---------------------------------------------------------------
