@@ -163,9 +163,11 @@ def permisos() -> dict:
 
 def test_se_deniegan_las_ediciones_directas_de_los_datos(permisos):
     deny = set(permisos["deny"])
-    for herramienta in ("Edit", "Write"):
-        for ruta in ("calib/templates/**", "runs/**/truth.csv", "runs/**/test.csv"):
-            assert f"{herramienta}({ruta})" in deny
+    # Solo reglas Edit(...): las reglas Write(...) daban error al iniciar claude, y Edit ya
+    # cubre las herramientas de escritura de archivos.
+    for ruta in ("calib/templates/**", "runs/**/truth.csv", "runs/**/test.csv"):
+        assert f"Edit({ruta})" in deny
+    assert not any(d.startswith("Write(") for d in deny)
     assert {"Bash(git push *)", "Bash(git reset --hard *)", "Read(videos/**)"} <= deny
     assert any(d.startswith("Bash(rm -rf calib") for d in deny)
 

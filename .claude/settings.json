@@ -25,11 +25,8 @@
     ],
     "deny": [
       "Edit(calib/templates/**)",
-      "Write(calib/templates/**)",
       "Edit(runs/**/truth.csv)",
-      "Write(runs/**/truth.csv)",
       "Edit(runs/**/test.csv)",
-      "Write(runs/**/test.csv)",
       "Read(videos/**)",
       "Bash(git push *)",
       "Bash(git reset --hard *)",
