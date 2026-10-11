@@ -38,6 +38,7 @@ def main() -> int:
 
     import numpy as np
 
+    from spectro import library as L
     from spectro import teach as T
     from spectro.config import Config
     from spectro.imaging import ncc
@@ -45,7 +46,7 @@ def main() -> int:
     from spectro.qc import load_qc_report
 
     templates_dir = CalibPaths.at(args.calib_dir).templates
-    entradas = T.list_library(templates_dir)
+    entradas = L.list_entries(templates_dir)
     if not entradas:
         sys.exit(f"No hay plantillas en {templates_dir}.")
 
@@ -58,14 +59,14 @@ def main() -> int:
     else:
         run = RunPaths.for_run(args.run, runs_dir=args.runs_dir, calib_dir=args.calib_dir)
         cfg = Config.load(run.config)
-        offsets = {x.archivo: x.offset for x in load_qc_report(run.qc_report)} if run.qc_report.exists() else {}
+        offsets = {x.file: x.offset for x in load_qc_report(run.qc_report)} if run.qc_report.exists() else {}
         muestras = T.load_truth(run.truth) + (T.load_truth(run.test) if args.with_test else [])
         pool, datas, errores = T.build_pool(muestras, cfg, run.frames, offsets)
         origen = {}
     for e in errores:
         print(f"muestra descartada: {e}")
-    T.library_usage(entradas, datas)
-    valor = {d.ident: d.sample.valor for d in datas}
+    L.usage(entradas, datas)
+    valor = {d.ident: d.sample.value for d in datas}
     print(f"{len(entradas)} plantillas, {len(datas)} muestras, {len(pool)} glifos\n")
 
     def de_donde(e) -> str:

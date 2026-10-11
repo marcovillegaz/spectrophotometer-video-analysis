@@ -34,7 +34,7 @@ Los scripts viven en `.claude/skills/diagnose-reading/scripts/` y se ejecutan co
 | rechazo alto solo en un **tramo** del video | cambió la luz, el enfoque o hay una mano; o ese tramo tiene valores que la biblioteca no vio | `crops.py` sobre ese tramo; muestrear ahí |
 | `signo con tinta` | la ROI incluye ruido o parte de otro elemento en la celda del signo | revisar la ROI en `calibracion.png` |
 | aceptadas pero erróneas (confianza media/alta) | variante de un dígito que falta, o etiqueta equivocada | `cells.py` y `crops.py` sobre ese fotograma |
-| leave-one-out bajo con confianza alta (`teach … --check`) | etiquetas equivocadas en `truth.csv` | `crops.py` sobre las muestras que no coinciden |
+| leave-one-out bajo con confianza alta (`teach check <id>`) | etiquetas equivocadas en `truth.csv` | `crops.py` sobre las muestras que no coinciden |
 
 ## Firmas conocidas (de incidentes reales)
 

@@ -34,8 +34,8 @@ def main() -> int:
         binaria, cajas = cortar_celdas(ctx, nombre)
         r = read_frame(load_frame(ctx.frames_dir / nombre, ctx.cfg), ctx.cfg, ctx.library, None,
                        ctx.offsets.get(nombre, (0, 0)))
-        print(f"\n{nombre}  qc={ctx.estados.get(nombre, '?')}  offset={ctx.offsets.get(nombre, (0, 0))}  "
-              f"lee {r.caracteres!r}  estado={r.estado}  confianza={r.confianza:.2f}  margen={r.margen:.3f}")
+        print(f"\n{nombre}  qc={ctx.statuses.get(nombre, '?')}  offset={ctx.offsets.get(nombre, (0, 0))}  "
+              f"lee {r.chars!r}  estado={r.status}  confianza={r.confidence:.2f}  margen={r.margin:.3f}")
         for i, x0, x1 in cajas:
             celda = binaria[:, x0:x1]
             tinta = float((celda > 0).sum()) / max(celda.size, 1)

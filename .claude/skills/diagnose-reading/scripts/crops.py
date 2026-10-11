@@ -42,7 +42,7 @@ def main() -> int:
         recorte = cv2.resize(recorte, None, fx=args.scale, fy=args.scale, interpolation=cv2.INTER_CUBIC)
         tile = np.full((recorte.shape[0] + 24, recorte.shape[1], 3), 30, np.uint8)
         tile[24:] = recorte
-        cv2.putText(tile, f"#{i}  {nombre[2:-4]}  {ctx.estados.get(nombre, '?')}", (4, 17),
+        cv2.putText(tile, f"#{i}  {nombre[2:-4]}  {ctx.statuses.get(nombre, '?')}", (4, 17),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
         tiles.append(tile)
     alto = max(t.shape[0] for t in tiles)

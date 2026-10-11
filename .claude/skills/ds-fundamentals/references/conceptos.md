@@ -41,7 +41,7 @@ Una entrada por concepto, con la misma forma: **en una frase**, **dónde aparece
 ## 5. Fuga de datos (data leakage)
 
 - **En una frase:** si un fotograma de prueba es casi idéntico a uno de entrenamiento, el modelo acierta por haber visto casi ese mismo fotograma, y la prueba pierde sentido.
-- **Dónde aparece:** `sampling.leakage`; el aviso de `--eval`; la distancia mínima `--gap` (5 s). A 4 fotogramas por segundo, dos vecinos distan 0,25 s y son casi la misma imagen. Mover una muestra de entrenamiento a prueba avisa que **ya aportó glifos** a la biblioteca.
+- **Dónde aparece:** `sampling.leakage`; el aviso de `teach test eval`; la distancia mínima `--gap` (5 s). A 4 fotogramas por segundo, dos vecinos distan 0,25 s y son casi la misma imagen. Mover una muestra de entrenamiento a prueba avisa que **ya aportó glifos** a la biblioteca.
 - **Ejemplo real:** el 10-oct-2026, la prueba de `img_8110` tenía 8 fotogramas a menos de 5 s de uno de entrenamiento y 23 pares a menos de 1 s entre sí; la de `img_8106`, 20 pares.
 - **Error típico:** tomar fotogramas consecutivos para la prueba (parecen muchos y son pocos) o pegados al entrenamiento.
 - **Qué decir:** la exactitud puede estar inflada; el informe lo avisa. Analogía: verificar una calibración con el mismo estándar con el que se calibró.
@@ -104,7 +104,7 @@ Una entrada por concepto, con la misma forma: **en una frase**, **dónde aparece
 ## 13. Hold-out por video
 
 - **En una frase:** la prueba más honesta no es de la misma corrida, sino de un **video que no se usó para entrenar**: mide cómo se comporta con un video nuevo, que es el uso real.
-- **Dónde aparece:** el informe marca el tipo, `misma_corrida` (la corrida tiene entrenamiento propio: mide ese video) u `otro_video`; las corridas se pueden excluir del entrenamiento para reservarlas como prueba.
+- **Dónde aparece:** el informe marca el tipo, `same_run` (la corrida tiene entrenamiento propio: mide ese video) u `other_video`; las corridas se pueden excluir del entrenamiento para reservarlas como prueba.
 - **Ejemplo real:** el 10-oct-2026, entrenando con tres videos y sin muestras de `img_8112`, la prueba de ese video dio 17 correctas de 20 (85 %, intervalo de 64 % a 95 %).
 - **Error típico:** presentar la exactitud de la misma corrida como si valiera para videos nuevos.
 - **Qué decir:** son dos preguntas distintas: «¿lee bien este video?» y «¿leerá bien el próximo?». Analogía: validar el método con otro lote u otro equipo.

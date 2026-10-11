@@ -25,6 +25,6 @@ Usá el **término de la primera columna** (en español, con el nombre en inglé
 | **Compromiso precisión–cobertura** | subir los umbrales baja los errores y sube los huecos | endurecer un criterio de aceptación: menos falsos positivos, más muestras sin resultado |
 | **Intervalo de Wilson** | el `[IC95 a%–b%]` que acompaña cada porcentaje | el rango plausible de un % de recuperación medido con pocas réplicas |
 | **Tamaño efectivo de muestra** | los *valores distintos* de la prueba | réplicas técnicas frente a muestras independientes |
-| **Hold-out por video** | una corrida sin entrenamiento propio (tipo `otro_video`) | validar el método con otro lote, otro equipo u otro día |
+| **Hold-out por video** | una corrida sin entrenamiento propio (tipo `other_video`) | validar el método con otro lote, otro equipo u otro día |
 | **Generalización** | cuánto sirve la biblioteca para un video que no vio | que el método funcione fuera del lote de desarrollo |
 | **Registro de imagen / deriva de cámara** | `qc` mide `dx`, `dy` por fotograma y `read` recorta con ese corrimiento | la deriva de la línea base o del instrumento durante la corrida |

@@ -54,7 +54,7 @@ def main() -> int:
     por_tramo: dict[int, list[int]] = {}
     rechazados = solo_margen = 0
     for r in filas:
-        binaria, cajas = cortar_celdas(ctx, r.archivo)
+        binaria, cajas = cortar_celdas(ctx, r.file)
         malos: list[str] = []
         for i, x0, x1 in cajas:
             celda = binaria[:, x0:x1]

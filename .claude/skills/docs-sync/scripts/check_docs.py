@@ -1,10 +1,15 @@
 """Verifica que la documentacion siga alineada con el CLI y entre si (solo lectura).
 
-Hace dos comprobaciones sobre ``README.md``, ``CLAUDE.md`` y ``docs/*.md``:
+Hace tres comprobaciones sobre ``README.md``, ``CLAUDE.md`` y ``docs/*.md``:
 
 1. **Comandos.** Cada linea ``python -m spectro ...`` de un bloque de codigo se *parsea en seco*
    con ``build_parser()``: no se ejecuta nada, pero un flag eliminado o mal escrito falla.
-2. **Enlaces.** Cada enlace relativo ``[texto](ruta#ancla)`` apunta a un archivo que existe y,
+   Tambien se revisan los comandos citados en prosa entre backticks (``python -m spectro ...`` o
+   ``teach ... --flag``): ahi solo cuentan los flags o subcomandos inexistentes, no los
+   argumentos obligatorios que falten, porque en prosa se citan abreviados.
+2. **Ids de corrida.** Un ``img_NNNN`` o ``AAAAMMDD_HHMMSS`` citado que no exista en ``runs/`` se
+   avisa (AVISO: no cambia el codigo de salida; puede ser un ejemplo historico).
+3. **Enlaces.** Cada enlace relativo ``[texto](ruta#ancla)`` apunta a un archivo que existe y,
    si trae ancla, a un encabezado que existe en ese archivo.
 
     python .claude/skills/docs-sync/scripts/check_docs.py            # revisa y resume
@@ -64,6 +69,32 @@ def extraer_comandos(texto: str) -> list[tuple[int, str]]:
     return out
 
 
+_EN_LINEA = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
+_ID_CORRIDA = re.compile(r"\b(img_\d{4}|\d{8}_\d{6})\b")
+
+
+def extraer_comandos_en_linea(texto: str) -> list[tuple[int, str]]:
+    """``(linea, comando)`` de los comandos citados en prosa entre backticks, fuera de bloques.
+
+    Cuenta un fragmento que empieza con ``python -m spectro`` o con ``teach `` y trae un flag.
+    """
+    out: list[tuple[int, str]] = []
+    dentro = False
+    for n, linea in enumerate(texto.splitlines(), 1):
+        if _CERCA.match(linea):
+            dentro = not dentro
+            continue
+        if dentro:
+            continue
+        for m in _EN_LINEA.finditer(linea):
+            frag = m.group(1).strip()
+            if re.match(r"python(?:\.exe)? -m spectro\b", frag):
+                out.append((n, frag))
+            elif frag.startswith("teach ") and " --" in frag:
+                out.append((n, f"python -m spectro {frag}"))
+    return out
+
+
 def a_argv(comando: str) -> list[str] | None:
     """Argumentos del comando listos para el parser; ``None`` si es una plantilla que se omite."""
     try:
@@ -110,7 +141,33 @@ def revisar_comandos(raiz: Path = RAIZ) -> tuple[list[str], int, int]:
             error = parsear(argv)
             if error:
                 problemas.append(f"{doc.relative_to(raiz)}:{n}: `{comando}` -> {error}")
+        for n, comando in extraer_comandos_en_linea(doc.read_text(encoding="utf-8")):
+            argv = a_argv(comando)
+            if argv is None:
+                omitidos += 1
+                continue
+            revisados += 1
+            error = parsear(argv)
+            # en prosa se cita abreviado: faltar un argumento obligatorio no es un error
+            if error and "required" not in error:
+                problemas.append(f"{doc.relative_to(raiz)}:{n}: `{comando}` (en prosa) -> {error}")
     return problemas, revisados, omitidos
+
+
+def revisar_ids(raiz: Path = RAIZ) -> list[str]:
+    """Avisos por cada id de corrida citado que no existe en ``runs/`` (no son fallos)."""
+    runs = raiz / "runs"
+    existentes = {d.name for d in runs.iterdir() if d.is_dir()} if runs.is_dir() else set()
+    avisos: list[str] = []
+    for doc in documentos(raiz):
+        vistos: set[str] = set()
+        for n, linea in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            for m in _ID_CORRIDA.finditer(linea):
+                ident = m.group(1)
+                if ident not in existentes and ident not in vistos:
+                    vistos.add(ident)
+                    avisos.append(f"{doc.relative_to(raiz)}:{n}: la corrida '{ident}' no existe en runs/")
+    return avisos
 
 
 def _slug(titulo: str) -> str:
@@ -165,6 +222,8 @@ def main() -> int:
     print(f"comandos: {revisados} revisados, {omitidos} omitidos (plantillas); enlaces: {enlaces} revisados")
     for linea in cmd_problemas + link_problemas:
         print("  PROBLEMA", linea)
+    for linea in revisar_ids(raiz):
+        print("  AVISO", linea)
     if not (cmd_problemas or link_problemas):
         print("  todo en orden")
     return 1 if (cmd_problemas or link_problemas) else 0

@@ -29,7 +29,7 @@ def contexto(args) -> SimpleNamespace:
     from spectro.config import Config
     from spectro.project import CalibPaths, RunPaths
     from spectro.qc import load_qc_report
-    from spectro.templates import load_templates
+    from spectro import library as lib
 
     run = RunPaths.for_run(args.run, runs_dir=args.runs_dir, calib_dir=args.calib_dir)
     if not run.config.exists():
@@ -38,12 +38,12 @@ def contexto(args) -> SimpleNamespace:
     qc = load_qc_report(run.qc_report) if run.qc_report.exists() else []
     calib = CalibPaths.at(args.calib_dir)
     try:
-        library = load_templates(calib.templates)
+        library = lib.load(calib.templates)
     except FileNotFoundError:
         library = []
     return SimpleNamespace(
         run=run, cfg=cfg, qc=qc, library=library, templates_dir=calib.templates,
-        offsets={r.archivo: r.offset for r in qc}, estados={r.archivo: r.estado for r in qc},
+        offsets={r.file: r.offset for r in qc}, statuses={r.file: r.status for r in qc},
         frames_dir=Path(run.frames),
     )
 

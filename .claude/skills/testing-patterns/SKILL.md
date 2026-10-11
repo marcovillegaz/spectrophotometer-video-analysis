@@ -73,3 +73,8 @@ Camino feliz · cada rama de error con su mensaje · datos vacíos / un solo ele
 ## Reportar un bug al developer
 
 Entregá: (1) el comportamiento esperado y el obtenido, (2) un **caso mínimo** que lo reproduce (el test que falla, aislado, o 5–10 líneas), (3) la ruta y la función donde creés que está, (4) si hay riesgo para los datos. No lo arregles.
+
+## Nombres, compatibilidad y cobertura
+
+- **Nombres en inglés** en columnas, claves, flags y estados (`file`, `value`, `status`, `confidence`...); los **nombres de los tests** siguen en español. Los alias de los nombres viejos viven solo en `src/spectro/compat.py`; `tests/test_compat.py` los cubre. Si un campo cambia de nombre, agregá el alias y un test con el archivo viejo.
+- **Piso de cobertura:** 85 % para `library.py`, `teach_cli.py`, `evaluation.py` y `teach_session.py`. Se comprueba con `pytest --cov=spectro --cov-report=json:$TEMP/cov.json` y `python tests/check_cobertura.py $TEMP/cov.json`; no hay piso global.
