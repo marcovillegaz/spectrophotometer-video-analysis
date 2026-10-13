@@ -1,6 +1,6 @@
 """Evaluacion sobre el conjunto de prueba (hold-out): cuanto se puede confiar en el lector.
 
-El conjunto de prueba (``runs/<id>/test.csv``) **nunca entra a la biblioteca**: son
+El conjunto de prueba (``runs/<id>/test/test.csv``) **nunca entra a la biblioteca**: son
 fotogramas con valor conocido que el lector no vio al aprender. Se lee cada uno con
 la biblioteca vigente y el resultado se separa en tres, porque al proyecto le importa
 mas abstenerse que equivocarse:
@@ -24,7 +24,7 @@ Interfaz publica:
     wilson(k, n, z=1.96)                       -> (lo, hi)
     evaluate(datas, library, cfg)              -> list[Lectura]   (el unico evaluador)
     to_validation(lecturas)                    -> ValidationReport
-    to_test_report(lecturas, ...)              -> TestReport
+    to_test_report(lecturas, ...)              -> TestReport   (con ``confusion`` y ``char_total`` por caracter)
     evaluate_test(...)                         -> TestReport      (envoltorio)
     format_test_report(report)                 -> list[str]
     write_test_report(report, path)            -> Path
@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import csv
 import math
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -89,6 +90,10 @@ class TestReport:
     leaks: list[tuple[str, str, float]] = field(default_factory=list)
     missing_chars: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    #: Celdas mal leidas: ``(esperado, leido) -> veces`` (sin contar el espacio esperado).
+    confusion: Counter = field(default_factory=Counter)
+    #: Celdas de la prueba por caracter esperado (sin contar el espacio).
+    char_total: Counter = field(default_factory=Counter)
 
     def _count(self, what: str) -> int:
         return sum(1 for r in self.results if r.result == what)
@@ -209,9 +214,12 @@ def to_test_report(
             res = "wrong"
         report.results.append(TestResult(
             d.sample.file, d.sample.value, r.chars.strip(), r.status, r.confidence, res))
-        for want, _ in zip(expected, r.chars):
+        for want, got in zip(expected, r.chars):
             if want == " ":
                 continue
+            report.char_total[want] += 1
+            if want != got:
+                report.confusion[(want, got)] += 1
             if want not in labels:
                 absent.add(want)
     report.missing_chars = sorted(absent)

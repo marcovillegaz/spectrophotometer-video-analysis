@@ -16,6 +16,7 @@ Comandos:
     report      -> absorbance.csv, preview.png, contact_sheet.png
     run         extract -> qc -> read -> report
     batch       new -> extract -> calibrate --auto -> run, por cada video, y runs/batch_report.csv
+    summary     efectividad del lector en un solo lugar: runs/summary.csv, summary_chars.csv y summary.html
 
 Las rutas no se tipean: ``--run <id>`` deriva las nueve desde ``RunPaths``
 (ver ``project.py``). Un flag explicito siempre le gana a lo derivado, asi que
@@ -350,6 +351,36 @@ def _batch_report(args: argparse.Namespace, run_ids: list[str], acc) -> None:
               "--min-accuracy / --max-error / --min-coverage o en la seccion 'acceptance' "
               "de calib/config.json")
     print(f"  reporte: {dest}")
+
+
+def cmd_summary(args: argparse.Namespace) -> int:
+    """Reporte general de efectividad (solo lectura sobre los datos). Ver ``summary.py``."""
+    from . import library
+    from .report import acceptance_for
+    from .summary import (
+        format_summary, load_all, summarize, write_chars_csv, write_html, write_summary_csv,
+    )
+
+    calib = args.calib_paths
+    lib = library.load(calib.templates)  # sin biblioteca: el error dice que correr
+    fingerprint = library.fingerprint(calib.templates)
+    acc = acceptance_for(calib.config, args.min_accuracy, args.max_error, args.min_coverage)
+    if args.hole <= 0:
+        raise ValueError("--hole es un tiempo en segundos mayor que 0")
+    ids = list(dict.fromkeys(args.runs)) or teach_cli._run_ids(args)
+    if not ids:
+        raise ValueError(f"No hay corridas en {args.runs_dir}/. Crea una con: python -m spectro new videos/<video>.MOV")
+    evals, loo = load_all(ids, args.runs_dir, calib, lib, fingerprint, args.gap, args.calib_dir)
+    summary = summarize(evals, loo, acc, args.hole, fingerprint, len(lib))
+    for line in format_summary(summary):
+        print(line)
+    runs_dir = Path(args.runs_dir)
+    written = [write_summary_csv(summary, runs_dir / "summary.csv"),
+               write_chars_csv(summary, runs_dir / "summary_chars.csv")]
+    if not args.no_html:
+        written.append(write_html(summary, runs_dir / "summary.html"))
+    print("\n  escrito: " +", ".join(str(w) for w in written))
+    return 0
 
 
 def _expand_videos(patterns: list[str]) -> list[Path]:
@@ -692,6 +723,26 @@ def build_parser() -> argparse.ArgumentParser:
                        help=f"{help_text}. Sin valor se usa 'acceptance' de calib/config.json; "
                             "sin umbrales el veredicto queda vacio")
     b.set_defaults(func=cmd_batch, needs_paths=False)
+
+    # -- summary
+    sm = subcommand("summary", help="Reporte general de efectividad del lector (solo lectura)",
+                        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    sm.add_argument("runs", nargs="*", metavar="RUN",
+                    help="Corridas a incluir (default: todas las dadas de alta)")
+    sm.add_argument("--gap", type=float, default=5.0,
+                    help="Segundos entre un fotograma de prueba y uno de entrenamiento para avisar de fuga")
+    sm.add_argument("--hole", type=float, default=10.0,
+                    help="Un hueco es una pausa de mas de estos segundos entre lecturas validas")
+    for flag, help_text in (
+        ("--min-accuracy", "Veredicto: exactitud minima sobre la prueba (fraccion, ej. 0.95)"),
+        ("--max-error", "Veredicto: error maximo entre las lecturas aceptadas de la prueba (fraccion)"),
+        ("--min-coverage", "Veredicto: cobertura minima, ok / fotogramas extraidos (fraccion)"),
+    ):
+        sm.add_argument(flag, type=float, default=None,
+                        help=f"{help_text}. Sin valor se usa 'acceptance' de calib/config.json; "
+                             "sin umbrales el veredicto queda vacio")
+    sm.add_argument("--no-html", action="store_true", help="No generar runs/summary.html")
+    sm.set_defaults(func=cmd_summary, needs_paths=False)
 
     return p
 
