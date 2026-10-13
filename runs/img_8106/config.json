@@ -1,12 +1,12 @@
 {
   "video": "videos\\IMG_8106.MOV",
-  "fps": 4.0,
+  "fps": 2.0,
   "rotation_deg": 1.5,
   "roi": {
     "x": 827,
     "y": 684,
     "w": 150,
-    "h": 41
+    "h": 42
   },
   "digits": {
     "n_digits": 6,
@@ -25,21 +25,20 @@
       40
     ],
     "min_score": 0.6,
-    "min_margin": 0.05,
-    "cluster_hamming": 6
+    "min_margin": 0.05
   },
   "qc": {
-    "min_mean_luma": 33.732682926829256,
-    "max_mean_luma": 59.8078048780488,
+    "min_mean_luma": 33.75928571428571,
+    "max_mean_luma": 58.93071428571429,
     "min_blur_var": 5.0,
     "min_contrast": 32.0,
-    "min_ink_fraction": 0.17707317073170734,
-    "max_ink_fraction": 0.4047804878048781,
+    "min_ink_fraction": 0.17111111111111107,
+    "max_ink_fraction": 0.3954285714285714,
     "anchor": {
       "x": 773,
-      "y": 271,
+      "y": 270,
       "w": 450,
-      "h": 82
+      "h": 84
     },
     "min_anchor_ncc": 0.7,
     "reference_frame": "t_0002243.000.jpg",
@@ -52,5 +51,10 @@
   },
   "read": {
     "max_rate": 0.5
+  },
+  "acceptance": {
+    "min_accuracy": null,
+    "max_error": null,
+    "min_coverage": null
   }
 }

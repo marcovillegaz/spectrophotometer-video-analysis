@@ -1,0 +1,17 @@
+file,typed,read_value,status,confidence,result
+t_0000116.500.jpg,0.563,0.563,ok,0.887,correct
+t_0000196.500.jpg,0.726,0.725,low_confidence,0.751,discarded
+t_0000376.000.jpg,-0.001,-0.001,ok,0.895,correct
+t_0000446.000.jpg,-0.426,0.426,ok,0.766,wrong
+t_0000517.000.jpg,0.370,0.370,ok,0.883,correct
+t_0000677.500.jpg,0.360,0.360,ok,0.899,correct
+t_0000840.000.jpg,0.316,0.316,ok,0.772,correct
+t_0000976.000.jpg,1.025,1.025,ok,0.914,correct
+t_0001255.500.jpg,0.005,0.005,ok,0.918,correct
+t_0001697.500.jpg,0.030,0.030,ok,0.856,correct
+t_0001862.500.jpg,0.025,0.025,ok,0.886,correct
+t_0002029.000.jpg,0.024,0.024,ok,0.878,correct
+t_0002069.000.jpg,0.024,0.024,ok,0.863,correct
+t_0002232.500.jpg,0.023,0.023,ok,0.868,correct
+t_0002312.500.jpg,0.022,0.022,ok,0.892,correct
+t_0002448.000.jpg,0.022,0.022,ok,0.904,correct

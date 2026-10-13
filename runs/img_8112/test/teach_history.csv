@@ -1,0 +1,6 @@
+date,kind,templates,training,test,distinct_values,correct,wrong,discarded,accuracy,accepted_error,coverage,fingerprint
+2026-10-11 21:36:12,same_run,36,26,16,14,14,1,1,0.8750,0.0667,0.9375,a53bf5c1f288
+2026-10-11 21:41:20,same_run,36,26,16,14,14,1,1,0.8750,0.0667,0.9375,a53bf5c1f288
+2026-10-11 21:43:41,same_run,36,26,16,14,14,1,1,0.8750,0.0667,0.9375,a53bf5c1f288
+2026-10-11 21:45:15,same_run,36,26,16,14,14,1,1,0.8750,0.0667,0.9375,a53bf5c1f288
+2026-10-11 21:45:54,same_run,36,26,16,14,14,1,1,0.8750,0.0667,0.9375,a53bf5c1f288

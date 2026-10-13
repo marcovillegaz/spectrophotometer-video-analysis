@@ -1,0 +1,6 @@
+run,frames,qc_dark,qc_blown,qc_blur,qc_low_contrast,qc_occluded,qc_blank,qc_camera_moved,qc_roi_outside,ok,low_confidence,spike,coverage,longest_hole_s,holes,test_kind,test,correct,wrong,discarded,accuracy,accuracy_lo,accuracy_hi,accepted_error,loo_exact,loo_total,evals,accuracy_first,accuracy_last,eval_current,outputs,verdict,detail
+img_8102,5408,0,3,0,0,0,2,0,0,5092,311,0,0.9416,2.5,0,,,,,,,,,,29,29,,,,,up_to_date,review,sin prueba que lo verifique
+img_8106,8972,0,9,0,0,4,247,2,0,7998,712,0,0.8914,12.5,2,,,,,,,,,,23,25,,,,,up_to_date,review,sin prueba que lo verifique
+img_8110,1912,0,0,0,0,0,15,0,0,1661,236,0,0.8687,5.0,0,,,,,,,,,,27,28,,,,,up_to_date,review,sin prueba que lo verifique
+img_8112,5088,1,22,1,0,1,194,3,0,4164,702,0,0.8184,14.5,4,same_run,49,46,1,2,0.9388,0.8348,0.9790,0.0213,26,26,5,0.8750,0.8750,no,up_to_date,review,error 2.1% > 2.0%
+TOTAL,21380,1,34,1,0,5,458,5,0,18915,1961,0,0.8847,14.5,6,same_run,49,46,1,2,0.9388,0.8348,0.9790,0.0213,105,108,,,,,up_to_date,review,error 2.1% > 2.0%
