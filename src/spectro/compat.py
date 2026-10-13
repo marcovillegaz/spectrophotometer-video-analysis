@@ -15,6 +15,7 @@ Interfaz publica:
     normalize_keys(data)        -> dict   (claves de un JSON, p. ej. ``read_meta.json``)
     normalize_config(data)      -> dict   (claves de ``config.json``)
     normalize_status(value)     -> str
+    migrate_run_layout(root)    -> list[tuple[Path, Path]]   (layout viejo de la corrida -> teach/ y test/)
 """
 
 from __future__ import annotations
@@ -52,6 +53,44 @@ CONFIG_KEY_ALIASES: dict[str, str] = {
 LEGACY_FLAGS: dict[str, str] = {
     "--min-exactitud": "--min-accuracy", "--min-cobertura": "--min-coverage",
 }
+
+
+#: ubicacion vieja -> nueva (relativas a ``runs/<id>/``) de los archivos que se mudaron a
+#: ``teach/`` y ``test/``.
+LEGACY_RUN_FILES: tuple[tuple[str, str], ...] = (
+    ("truth.csv", "teach/truth.csv"),
+    ("rejected.csv", "teach/rejected.csv"),
+    ("out/teach_report.csv", "teach/teach_report.csv"),
+    ("test.csv", "test/test.csv"),
+    ("out/test_report.csv", "test/test_report.csv"),
+    ("out/teach_history.csv", "test/teach_history.csv"),
+)
+
+
+def migrate_run_layout(root: Path | str) -> list[tuple[Path, Path]]:
+    """Mueve los archivos de una corrida con el layout viejo a ``teach/`` y ``test/``.
+
+    Idempotente: lo que ya esta en su lugar no se toca. Si existen el origen y el destino
+    no pisa nada y falla, para que el usuario decida cual conservar. Avisa por cada
+    archivo movido y devuelve los pares ``(origen, destino)``.
+    """
+    root = Path(root)
+    pairs = [(root / old, root / new) for old, new in LEGACY_RUN_FILES]
+    conflicts = [(o, n) for o, n in pairs if o.exists() and n.exists()]
+    if conflicts:
+        old, new = conflicts[0]
+        raise RuntimeError(
+            f"Existen el archivo viejo {old} y el nuevo {new}: revisa cual conservar "
+            f"y borra el otro a mano antes de seguir"
+        )
+    moved: list[tuple[Path, Path]] = []
+    for old, new in pairs:
+        if old.exists():
+            new.parent.mkdir(parents=True, exist_ok=True)
+            old.rename(new)
+            print(f"aviso: se movio {old} -> {new}")
+            moved.append((old, new))
+    return moved
 
 
 def normalize_status(value: str) -> str:

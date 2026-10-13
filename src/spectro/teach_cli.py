@@ -11,6 +11,7 @@ verbo con solo los flags que le sirven, y se agrupan por lo que tocan:
     teach samples {list,add,remove,suggest,label}  muestras de ENTRENAMIENTO de una corrida (truth.csv)
     teach test {list,add,remove,suggest,label,eval,history}
                                                    PRUEBAS de una corrida (test.csv): nunca entran a la biblioteca
+    teach rejected {list,remove}                   fotogramas descartados al etiquetar (rejected.csv)
 
 El id de la corrida va como argumento posicional, completo: nunca se adivina sobre que
 experimento se trabaja. Los handlers no pasan por ``cli.resolve_paths`` (``needs_paths=False``):
@@ -33,7 +34,7 @@ from .compat import LEGACY_FLAGS
 from .config import DEFAULT_MAX_PER_LABEL, Config
 from .project import RunContext, RunPaths, list_runs, require_run
 
-AREAS = ("status", "lib", "train", "check", "samples", "test")
+AREAS = ("status", "lib", "train", "check", "samples", "test", "rejected")
 #: Flags del layout que llevan valor: se saltean al buscar el area.
 _LAYOUT_WITH_VALUE = ("--run", "--runs-dir", "--calib-dir", "--config")
 
@@ -57,9 +58,10 @@ teach ya no usa flags de modo: se elige un area y un verbo, y el id de la corrid
   teach --eval-all                        teach test eval
   --min-exactitud / --min-cobertura       --min-accuracy / --min-coverage   (teach test eval, batch)
   (nuevo)                                 teach status | teach lib restore | teach test history ID
+  (nuevo)                                 teach rejected list [ID] | teach rejected remove ID ARCHIVO...
 
 --strategy, --seed, --gap, --keep y --max-per-label siguen existiendo, pero en el verbo al que sirven.
-Areas: status, lib, train, check, samples, test. Ayuda de cada una: teach <area> --help"""
+Areas: status, lib, train, check, samples, test, rejected. Ayuda de cada una: teach <area> --help"""
 
 
 # --------------------------------------------------------------------------
@@ -110,9 +112,13 @@ def _load(args: argparse.Namespace, run_id: str) -> RunContext:
 
 
 def _run_ids(args: argparse.Namespace) -> list[str]:
-    """Las corridas dadas de alta (con config.json)."""
-    return [r for r in list_runs(runs_dir=args.runs_dir)
-            if RunPaths.for_run(r, runs_dir=args.runs_dir, calib_dir=args.calib_dir).exists()]
+    """Las corridas dadas de alta (con config.json), con el layout viejo ya migrado a ``teach/`` y ``test/``."""
+    paths = [RunPaths.for_run(r, runs_dir=args.runs_dir, calib_dir=args.calib_dir)
+             for r in list_runs(runs_dir=args.runs_dir)]
+    found = [p for p in paths if p.exists()]
+    for p in found:
+        p.migrate_layout()
+    return [p.id for p in found]
 
 
 def _run_paths(args: argparse.Namespace, run_id: str) -> RunPaths:
@@ -163,6 +169,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     from . import library, read
     from .evaluation import load_history
     from .qc import load_qc_report
+    from .rejected import load_rejected
     from .report import QC_REASONS
     from .teach import ALL_CHARS, load_truth
 
@@ -176,6 +183,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     cfgs = {r: Config.load(p.config) for r, p in runs.items()}
     train = {r: load_truth(p.truth) for r, p in runs.items()}
     test = {r: load_truth(p.test) for r, p in runs.items()}
+    rejected = {r: load_rejected(p.rejected) for r, p in runs.items()}
 
     print("== teach status ==")
     print(f"biblioteca: {tdir}   {len(lib)} plantillas   huella {fingerprint or '-'}")
@@ -195,13 +203,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     if not ids:
         print("  (ninguna) crea una con: python -m spectro new videos/<video>.MOV")
     else:
-        print(f"  {'corrida':22s} {'entren.':>7s} {'prueba':>6s}  {'salidas':16s} ultima evaluacion")
+        print(f"  {'corrida':22s} {'entren.':>7s} {'prueba':>6s} {'descart.':>8s}  {'salidas':16s} ultima evaluacion")
         for r in ids:
             hist = load_history(runs[r].history)
             last_eval_text = (f"{hist[-1]['date']}  exactitud {float(hist[-1]['accuracy']):.1%}"
                    if hist else "-")
             status = read.outputs_state(runs[r].readings, tdir, fingerprint)
-            print(f"  {r:22s} {len(train[r]):7d} {len(test[r]):6d}  {status:16s} {last_eval_text}")
+            print(f"  {r:22s} {len(train[r]):7d} {len(test[r]):6d} {len(rejected[r]):8d}  {status:16s} {last_eval_text}")
 
         print("\ndescartes de qc por motivo (fotogramas que no se leen):")
         print(f"  {'corrida':22s} " + " ".join(f"{m[:11]:>11s}" for m in QC_REASONS))
@@ -450,7 +458,7 @@ def _train(args: argparse.Namespace, build: bool) -> int:
         if overlapping:
             print(f"    aviso: {len(overlapping)} fotogramas de prueba de {c.run_id} estan a menos de "
                   f"{args.gap:g} s de uno de entrenamiento")
-    print("  informes por corrida: runs/<id>/out/teach_report.csv")
+    print("  informes por corrida: runs/<id>/teach/teach_report.csv")
     print("  las pruebas (test.csv) no se usaron; para medirlas: python -m spectro teach test eval")
     return 0
 
@@ -522,6 +530,7 @@ def cmd_set_list(args: argparse.Namespace) -> int:
 
 def cmd_set_add(args: argparse.Namespace) -> int:
     from . import teach as T
+    from .rejected import rejected_files, remove_rejected, save_rejected
     from .sampling import assign
 
     _guard(args)
@@ -548,6 +557,10 @@ def cmd_set_add(args: argparse.Namespace) -> int:
         T.save_truth(ctx.paths.truth, train)
     if test != test0:
         T.save_truth(ctx.paths.test, test)
+    restored = {x.file for x in train + test} & rejected_files(ctx.rejected)
+    if restored:
+        save_rejected(ctx.paths.rejected, remove_rejected(ctx.rejected, restored)[0])
+        print(f"  aviso: {', '.join(sorted(restored))} estaba descartado; lo saque de {ctx.paths.rejected}")
     print(f"{len(train)} muestras de entrenamiento en {ctx.paths.truth}; "
           f"{len(test)} de prueba en {ctx.paths.test}")
     return 0
@@ -574,11 +587,14 @@ def cmd_set_remove(args: argparse.Namespace) -> int:
     return 0
 
 
-def _suggestions(args: argparse.Namespace, ctx: RunContext, n: int):
-    """Fotogramas a etiquetar segun la estrategia. Devuelve ``(sugerencias, avisos)``.
+def _suggest_fetch(args: argparse.Namespace, ctx: RunContext):
+    """Arma el pedido de sugerencias: ``(fetch, base_exclude, base_avoid)``.
 
-    La prueba siempre es al azar y lejos del entrenamiento (y el entrenamiento lejos de la
-    prueba): una prueba elegida por incertidumbre subestimaria el error real.
+    ``fetch(exclude, avoid_times, n, round) -> (sugerencias, avisos)`` aplica la estrategia
+    (``round`` suma a la semilla: cada ronda de reposicion da un lote distinto). La prueba
+    siempre es al azar y lejos del entrenamiento (y el entrenamiento lejos de la prueba):
+    una prueba elegida por incertidumbre subestimaria el error real. ``base_exclude`` es lo
+    etiquetado en cualquiera de los dos conjuntos mas lo descartado sin muestra.
     """
     from . import read
     from . import sampling as S
@@ -587,17 +603,28 @@ def _suggestions(args: argparse.Namespace, ctx: RunContext, n: int):
     for_test = args.which == "test"
     strategy = "random" if for_test else args.strategy
     other = ctx.train if for_test else ctx.test
-    avoid = [time_from_name(x.file) for x in other]
-    exclude = {x.file for x in ctx.train + ctx.test}
+    base_avoid = [time_from_name(x.file) for x in other]
+    base_exclude = {x.file for x in ctx.train + ctx.test} | ctx.rejected_files()
     run = ctx.paths
     reads, stale = None, False
     if strategy in ("mixed", "uncertain") and run.readings.exists():
         reads = read.load_readings(run.readings)
         stale = (S.readings_stale(run.readings, ctx.templates_dir, run.config)
                  or read.outputs_state(run.readings, ctx.templates_dir) == read.STALE)
-    return S.suggest(strategy, items=ctx.items(), readings=reads, cfg=ctx.cfg,
-                     exclude=exclude, n=n, seed=DEFAULT_SUGGEST_SEED if args.seed is None else args.seed, gap_s=args.gap,
-                     avoid_times=avoid, stale=stale)
+    seed = DEFAULT_SUGGEST_SEED if args.seed is None else args.seed
+
+    def fetch(exclude: set[str], avoid: list[float], n: int, round: int = 0):
+        return S.suggest(strategy, items=ctx.items(), readings=reads, cfg=ctx.cfg,
+                         exclude=exclude, n=n, seed=seed + round, gap_s=args.gap,
+                         avoid_times=avoid, stale=stale)
+
+    return fetch, base_exclude, base_avoid
+
+
+def _suggestions(args: argparse.Namespace, ctx: RunContext, n: int):
+    """Fotogramas a etiquetar segun la estrategia. Devuelve ``(sugerencias, avisos)``."""
+    fetch, exclude, avoid = _suggest_fetch(args, ctx)
+    return fetch(exclude, avoid, n, 0)
 
 
 def cmd_set_suggest(args: argparse.Namespace) -> int:
@@ -612,9 +639,41 @@ def cmd_set_suggest(args: argparse.Namespace) -> int:
         print(f"  aviso: {a}")
     for sg in sug:
         print(f"  {sg.file}   t={sg.t_s:8.2f} s   {sg.reason}")
+    if ctx.rejected_files():
+        print(f"  aviso: se excluyeron {len(ctx.rejected_files())} fotogramas descartados "
+              f"(ver: python -m spectro teach rejected list {args.run_id})")
     area = "samples" if which == "train" else "test"
     print(f"  para cargarlos: python -m spectro teach {area} label {args.run_id} --queue {args.n}")
     return 0
+
+
+def _label_queue(args: argparse.Namespace, ctx: RunContext):
+    """La cola de ``label``: ``(names, reasons, refill)``.
+
+    Sin ``--queue``, todos los fotogramas que pasaron QC menos los descartados y sin
+    reposicion. Con ``--queue N``, la lista de ``suggest`` mas un ``QueueRefill`` que repone
+    la cola cuando se descarta un fotograma.
+    """
+    from .sampling import QueueRefill
+
+    if not args.queue:
+        rejected = ctx.rejected_files()
+        names = [n for n in ctx.names() if n not in rejected]
+        if not names:
+            if rejected:
+                raise ValueError(
+                    "Todos los fotogramas estan descartados. Restauralos con: python -m spectro "
+                    f"teach rejected remove {args.run_id} ARCHIVO...")
+            raise ValueError("No hay fotogramas. Corre primero extract y qc.")
+        return names, {}, None
+    fetch, exclude, avoid = _suggest_fetch(args, ctx)
+    sug, warnings = fetch(exclude, avoid, args.queue, 0)
+    for a in warnings:
+        print(f"aviso: {a}")
+    if not sug:
+        raise ValueError("No hay fotogramas que sugerir (todo esta etiquetado, descartado o excluido).")
+    refill = QueueRefill(fetch, max(args.queue, 5), args.gap)
+    return [sg.file for sg in sug], {sg.file: sg.reason for sg in sug}, refill
 
 
 def cmd_set_label(args: argparse.Namespace) -> int:
@@ -624,18 +683,54 @@ def cmd_set_label(args: argparse.Namespace) -> int:
     _guard(args)
     which = args.which
     ctx = _load(args, args.run_id)
-    names, reasons = ctx.names(), {}
-    if args.queue:
-        sug, warnings = _suggestions(args, ctx, args.queue)
-        for a in warnings:
-            print(f"aviso: {a}")
-        if not sug:
-            raise ValueError("No hay fotogramas que sugerir (todo esta etiquetado o excluido).")
-        names = [sg.file for sg in sug]
-        reasons = {sg.file: sg.reason for sg in sug}
+    names, reasons, refill = _label_queue(args, ctx)
     ui_args = TeachParams.from_context(ctx, args.max_per_label, args.gap, args.seed)
     return run_teach_ui(ctx.cfg, ui_args, names, ctx.offsets, ctx.train, test=ctx.test,
-                        reasons=reasons, target=which)
+                        reasons=reasons, target=which, rejected=ctx.rejected, refill=refill)
+
+
+# --------------------------------------------------------------------------
+# rejected
+# --------------------------------------------------------------------------
+def cmd_rejected_list(args: argparse.Namespace) -> int:
+    from .extract import time_from_name
+    from .rejected import load_rejected
+
+    _guard(args)
+    if args.run_id is None:
+        print("== fotogramas descartados por corrida ==")
+        print(f"  {'corrida':22s} {'descartados':>11s} {'entren.':>7s} {'prueba':>6s}")
+        for r in _run_ids(args):
+            rows = load_rejected(_run_paths(args, r).rejected)
+            print(f"  {r:22s} {len(rows):11d} {sum(x.which == 'train' for x in rows):7d} "
+                  f"{sum(x.which == 'test' for x in rows):6d}")
+        return 0
+    ctx = _load(args, args.run_id)
+    rows = sorted(ctx.rejected, key=lambda x: x.file)
+    print(f"== {len(rows)} fotogramas descartados de {args.run_id} ({ctx.paths.rejected}) ==")
+    if not rows:
+        print("  (ninguno)")
+    else:
+        print(f"  {'archivo':24s} {'t (s)':>9s}  {'set':5s} fecha")
+        for x in rows:
+            print(f"  {x.file:24s} {time_from_name(x.file):9.2f}  {x.which:5s} {x.date}")
+    return 0
+
+
+def cmd_rejected_remove(args: argparse.Namespace) -> int:
+    from .rejected import remove_rejected, save_rejected
+
+    _guard(args)
+    ctx = _load(args, args.run_id)
+    remaining, was = remove_rejected(ctx.rejected, args.files)
+    for a in args.files:
+        if a not in was:
+            print(f"  aviso: {a} no esta descartado")
+    if not was:
+        raise ValueError(f"Ninguno de esos fotogramas esta en {ctx.paths.rejected}")
+    save_rejected(ctx.paths.rejected, remaining)
+    print(f"{len(was)} fotogramas restaurados; quedan {len(remaining)} descartados en {ctx.paths.rejected}")
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -782,8 +877,8 @@ def register(sub, layout: argparse.ArgumentParser) -> None:
 
     # -- samples y test
     for name, which, help_text in (
-        ("samples", "train", "Muestras de ENTRENAMIENTO de una corrida (runs/<id>/truth.csv)"),
-        ("test", "test", "PRUEBAS de una corrida (runs/<id>/test.csv): nunca entran a la biblioteca"),
+        ("samples", "train", "Muestras de ENTRENAMIENTO de una corrida (runs/<id>/teach/truth.csv)"),
+        ("test", "test", "PRUEBAS de una corrida (runs/<id>/test/test.csv): nunca entran a la biblioteca"),
     ):
         _, g = area(name, help_text, "verb")
         d = {"which": which}
@@ -835,3 +930,11 @@ def register(sub, layout: argparse.ArgumentParser) -> None:
                                help=f"Veredicto: {h} (fraccion). Sin valor, 'acceptance' de calib/config.json")
             p = leaf(g, "history", cmd_test_history, "La curva de aprendizaje: una fila por evaluacion")
             run_arg(p)
+
+    # -- rejected
+    _, g = area("rejected", "Fotogramas descartados al etiquetar (runs/<id>/teach/rejected.csv)", "verb")
+    p = leaf(g, "list", cmd_rejected_list, "Sin corrida, una tabla de todas; con corrida, sus descartados")
+    run_arg(p, optional=True)
+    p = leaf(g, "remove", cmd_rejected_remove, "Restaurar fotogramas: vuelven a sugerirse")
+    run_arg(p)
+    p.add_argument("files", nargs="+", metavar="ARCHIVO", help="Ej. t_0001352.000.jpg")

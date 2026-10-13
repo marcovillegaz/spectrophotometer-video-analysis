@@ -73,7 +73,7 @@ def test_append_history_en_un_archivo_nuevo_escribe_la_cabecera_con_huella(cfg_s
 # la huella en el historial y teach status
 # ==========================================================================
 def _ultima_fila(p):
-    return load_history(p["run"] / "out" / "teach_history.csv")[-1]
+    return load_history(p["run"] / "test" / "teach_history.csv")[-1]
 
 
 def _fechar_biblioteca(p, delta):
@@ -112,7 +112,7 @@ def test_status_pide_evaluar_si_cambia_la_biblioteca_tras_la_evaluacion(p, capsy
 def test_status_con_un_historial_viejo_sin_huella_se_juzga_por_fecha(p, capsys):
     entrenar(p)
     _fechar_biblioteca(p, -7200)
-    hist = p["run"] / "out" / "teach_history.csv"
+    hist = p["run"] / "test" / "teach_history.csv"
     hist.parent.mkdir(parents=True, exist_ok=True)
     viejas = [c for c in HISTORY_FIELDS if c != "fingerprint"]
     fila = [time.strftime("%Y-%m-%d %H:%M:%S"), "same_run", "12", "8", "2", "2", "2", "0", "0",

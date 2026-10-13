@@ -10,7 +10,7 @@ La validacion es *leave-one-out*: cada muestra se lee con la biblioteca armada
 **sin sus propios glifos**. Asi la exactitud no esta inflada por haber aprendido
 justo lo que despues se pregunta.
 
-Los valores se guardan como **texto** (``runs/<id>/truth.csv``) para conservar el
+Los valores se guardan como **texto** (``runs/<id>/teach/truth.csv``) para conservar el
 signo de ``-0.000`` y los ceros finales.
 
 Interfaz publica:

@@ -42,9 +42,9 @@ def _corrida(base, run_id, train=TRAIN, test=TEST, sign=True):
         cv2.imwrite(str(run / "frames" / _nombre(100 + i * 10)), render_display(t))
         muestras_p.append(T.Sample(_nombre(100 + i * 10), t.strip()))
     if muestras_t:
-        T.save_truth(run / "truth.csv", muestras_t)
+        T.save_truth(run / "teach" / "truth.csv", muestras_t)
     if muestras_p:
-        T.save_truth(run / "test.csv", muestras_p)
+        T.save_truth(run / "test" / "test.csv", muestras_p)
     return run
 
 
@@ -280,6 +280,7 @@ def test_status_de_una_corrida_sin_qc_lo_dice(p, capsys):
 def test_status_marca_las_salidas_desactualizadas_y_propone_releer(p, capsys):
     entrenar(p)
     out = p["run"] / "out"
+    out.mkdir(parents=True, exist_ok=True)
     (out / "readings.csv").write_text("archivo\n", encoding="utf-8")
     (out / "read_meta.json").write_text('{"fingerprint": "000000000000"}', encoding="utf-8")
     capsys.readouterr()
@@ -294,6 +295,7 @@ def test_status_con_salidas_al_dia_no_pide_releer(p, capsys):
 
     entrenar(p)
     out = p["run"] / "out"
+    out.mkdir(parents=True, exist_ok=True)
     (out / "readings.csv").write_text("archivo\n", encoding="utf-8")
     write_read_meta(out / "read_meta.json", p["lib"], len(L.load(p["lib"])))
     capsys.readouterr()
@@ -318,7 +320,7 @@ def test_status_pide_evaluar_la_prueba_y_deja_de_pedirlo_tras_evaluar(p, capsys)
 
 
 def test_status_no_pide_evaluar_si_no_hay_prueba(p, capsys):
-    (p["run"] / "test.csv").unlink()
+    (p["run"] / "test" / "test.csv").unlink()
     entrenar(p)
     capsys.readouterr()
     assert teach(p, "status") == 0
@@ -573,7 +575,7 @@ def test_train_exclude_deja_la_corrida_afuera(p, capsys):
     _corrida(p["tmp"], "r2", train=["0.333", "4.567", "8.901", "2.045", "6.789"], test=[], sign=False)
     assert teach(p, "train", "--exclude", "r2") == 0
     assert "excluidas (quedan como prueba): r2" in capsys.readouterr().out
-    assert not (p["tmp"] / "runs" / "r2" / "out" / "teach_report.csv").exists()
+    assert not (p["tmp"] / "runs" / "r2" / "teach" / "teach_report.csv").exists()
 
 
 def test_train_avisa_si_una_prueba_esta_pegada_al_entrenamiento(p, capsys):
@@ -612,7 +614,7 @@ def test_train_no_usa_las_pruebas(p, monkeypatch):
 
     monkeypatch.setattr(T, "build_pool", espia)
     entrenar(p)
-    probadas = {s.file for s in T.load_truth(p["run"] / "test.csv")}
+    probadas = {s.file for s in T.load_truth(p["run"] / "test" / "test.csv")}
     assert vistos and not probadas & set(vistos)
 
 
@@ -667,7 +669,7 @@ def test_samples_add_agrega_y_es_idempotente(p):
     cv2.imwrite(str(p["run"] / "frames" / nuevo), render_display("-3.333"))
     assert teach(p, "samples", "add", "r1", f"{nuevo}=-3.333") == 0
     assert teach(p, "samples", "add", "r1", f"{nuevo}=-3.333") == 0
-    muestras = T.load_truth(p["run"] / "truth.csv")
+    muestras = T.load_truth(p["run"] / "teach" / "truth.csv")
     assert len(muestras) == 9 and sum(1 for s in muestras if s.file == nuevo) == 1
 
 
@@ -675,7 +677,7 @@ def test_samples_add_acepta_coma_decimal_y_normaliza(p):
     nuevo = _nombre(500)
     cv2.imwrite(str(p["run"] / "frames" / nuevo), render_display(" 3.333"))
     assert teach(p, "samples", "add", "r1", f"{nuevo}=3,333") == 0
-    assert {s.file: s.value for s in T.load_truth(p["run"] / "truth.csv")}[nuevo] == "3.333"
+    assert {s.file: s.value for s in T.load_truth(p["run"] / "teach" / "truth.csv")}[nuevo] == "3.333"
 
 
 @pytest.mark.parametrize("valor, mensaje", [
@@ -684,19 +686,19 @@ def test_samples_add_acepta_coma_decimal_y_normaliza(p):
     ("-", "valor invalido"),
 ])
 def test_samples_add_con_un_valor_mal_formado_falla_y_no_escribe(p, capsys, valor, mensaje):
-    antes = (p["run"] / "truth.csv").read_bytes()
+    antes = (p["run"] / "teach" / "truth.csv").read_bytes()
     assert teach(p, "samples", "add", "r1", f"{_nombre(0)}={valor}") == 1
     assert mensaje in capsys.readouterr().err
-    assert (p["run"] / "truth.csv").read_bytes() == antes
+    assert (p["run"] / "teach" / "truth.csv").read_bytes() == antes
 
 
 def test_samples_add_con_un_item_malo_entre_buenos_no_guarda_ninguno(p, capsys):
     """Rompe: guardar los items que ya se procesaron cuando uno posterior falla."""
     nuevo = _nombre(500)
     cv2.imwrite(str(p["run"] / "frames" / nuevo), render_display("-3.333"))
-    antes = (p["run"] / "truth.csv").read_bytes()
+    antes = (p["run"] / "teach" / "truth.csv").read_bytes()
     assert teach(p, "samples", "add", "r1", f"{nuevo}=-3.333", "t_9999999.000.jpg=1.111") == 1
-    assert (p["run"] / "truth.csv").read_bytes() == antes
+    assert (p["run"] / "teach" / "truth.csv").read_bytes() == antes
 
 
 def test_samples_add_con_un_valor_negativo_sin_celda_de_signo_falla(tmp_path, capsys):
@@ -709,10 +711,10 @@ def test_samples_add_con_un_valor_negativo_sin_celda_de_signo_falla(tmp_path, ca
 def test_test_add_no_toca_truth_csv(p):
     nuevo = _nombre(500)
     cv2.imwrite(str(p["run"] / "frames" / nuevo), render_display("-3.333"))
-    antes = (p["run"] / "truth.csv").read_bytes()
+    antes = (p["run"] / "teach" / "truth.csv").read_bytes()
     assert teach(p, "test", "add", "r1", f"{nuevo}=-3.333") == 0
-    assert (p["run"] / "truth.csv").read_bytes() == antes
-    assert nuevo in {s.file for s in T.load_truth(p["run"] / "test.csv")}
+    assert (p["run"] / "teach" / "truth.csv").read_bytes() == antes
+    assert nuevo in {s.file for s in T.load_truth(p["run"] / "test" / "test.csv")}
 
 
 def test_samples_add_de_un_fotograma_de_prueba_lo_pasa_a_entrenamiento_con_aviso(p, capsys):
@@ -720,8 +722,8 @@ def test_samples_add_de_un_fotograma_de_prueba_lo_pasa_a_entrenamiento_con_aviso
     capsys.readouterr()
     assert teach(p, "samples", "add", "r1", f"{archivo}=3.456") == 0
     assert "estaba en la prueba y paso a entrenamiento" in capsys.readouterr().out
-    assert archivo in {s.file for s in T.load_truth(p["run"] / "truth.csv")}
-    assert archivo not in {s.file for s in T.load_truth(p["run"] / "test.csv")}
+    assert archivo in {s.file for s in T.load_truth(p["run"] / "teach" / "truth.csv")}
+    assert archivo not in {s.file for s in T.load_truth(p["run"] / "test" / "test.csv")}
 
 
 def test_un_fotograma_nunca_queda_en_los_dos_conjuntos(p):
@@ -729,18 +731,18 @@ def test_un_fotograma_nunca_queda_en_los_dos_conjuntos(p):
     a = _nombre(0)
     for area in ("test", "samples", "test", "samples"):
         assert teach(p, area, "add", "r1", f"{a}=-0.123") == 0
-        tr = {s.file for s in T.load_truth(p["run"] / "truth.csv")}
-        te = {s.file for s in T.load_truth(p["run"] / "test.csv")}
+        tr = {s.file for s in T.load_truth(p["run"] / "teach" / "truth.csv")}
+        te = {s.file for s in T.load_truth(p["run"] / "test" / "test.csv")}
         assert not tr & te
 
 
 def test_los_nombres_repetidos_entre_corridas_no_se_mezclan(p):
     """Rompe: identificar muestras solo por nombre de fotograma."""
     r2 = _corrida(p["tmp"], "r2", train=[" 1.111"], test=[], sign=True)
-    antes_r2 = (r2 / "truth.csv").read_bytes()
+    antes_r2 = (r2 / "teach" / "truth.csv").read_bytes()
     assert teach(p, "test", "add", "r1", f"{_nombre(0)}=-0.123") == 0        # el mismo nombre existe en r2
-    assert (r2 / "truth.csv").read_bytes() == antes_r2
-    assert not (r2 / "test.csv").exists()
+    assert (r2 / "teach" / "truth.csv").read_bytes() == antes_r2
+    assert not (r2 / "test" / "test.csv").exists()
 
 
 def test_add_a_una_corrida_inexistente_falla_sin_crear_nada(p, capsys):
@@ -753,17 +755,17 @@ def test_remove_quita_solo_del_conjunto_pedido(p, capsys):
     capsys.readouterr()
     assert teach(p, "samples", "remove", "r1", _nombre(0), _nombre(10)) == 0
     assert "2 muestras quitadas; quedan 6" in capsys.readouterr().out
-    assert len(T.load_truth(p["run"] / "truth.csv")) == 6 and len(T.load_truth(p["run"] / "test.csv")) == 2
+    assert len(T.load_truth(p["run"] / "teach" / "truth.csv")) == 6 and len(T.load_truth(p["run"] / "test" / "test.csv")) == 2
 
 
 def test_remove_de_un_fotograma_que_esta_en_el_otro_conjunto_falla_sin_tocar_nada(p, capsys):
     """Rompe: que `samples remove` borre tambien de la prueba (o al reves)."""
-    antes_tr, antes_te = (p["run"] / "truth.csv").read_bytes(), (p["run"] / "test.csv").read_bytes()
+    antes_tr, antes_te = (p["run"] / "teach" / "truth.csv").read_bytes(), (p["run"] / "test" / "test.csv").read_bytes()
     assert teach(p, "samples", "remove", "r1", _nombre(100)) == 1          # esta en la prueba
     assert "Ninguno de esos fotogramas" in capsys.readouterr().err
     assert teach(p, "test", "remove", "r1", _nombre(0)) == 1               # esta en entrenamiento
-    assert (p["run"] / "truth.csv").read_bytes() == antes_tr
-    assert (p["run"] / "test.csv").read_bytes() == antes_te
+    assert (p["run"] / "teach" / "truth.csv").read_bytes() == antes_tr
+    assert (p["run"] / "test" / "test.csv").read_bytes() == antes_te
 
 
 def test_remove_con_un_fotograma_desconocido_avisa_y_quita_el_resto(p, capsys):
@@ -775,7 +777,7 @@ def test_remove_con_un_fotograma_desconocido_avisa_y_quita_el_resto(p, capsys):
 
 def test_remove_ultima_muestra_deja_un_conjunto_vacio_y_list_lo_tolera(p, capsys):
     assert teach(p, "test", "remove", "r1", _nombre(100), _nombre(110)) == 0
-    assert T.load_truth(p["run"] / "test.csv") == []
+    assert T.load_truth(p["run"] / "test" / "test.csv") == []
     capsys.readouterr()
     assert teach(p, "test", "list", "r1") == 0
     assert "(sin muestras)" in capsys.readouterr().out
@@ -790,7 +792,7 @@ def test_samples_suggest_no_repite_lo_ya_etiquetado(p, capsys):
         cv2.imwrite(str(p["run"] / "frames" / _nombre(1000 + i * 10)), render_display(" 1.111"))
     assert teach(p, "samples", "suggest", "r1", "5", "--gap", "0") == 0
     nombres = _sugeridos(capsys.readouterr().out)
-    etiquetados = {s.file for s in T.load_truth(p["run"] / "truth.csv") + T.load_truth(p["run"] / "test.csv")}
+    etiquetados = {s.file for s in T.load_truth(p["run"] / "teach" / "truth.csv") + T.load_truth(p["run"] / "test" / "test.csv")}
     assert len(nombres) == 5 and not set(nombres) & etiquetados
 
 
@@ -841,7 +843,7 @@ def ui_espia(monkeypatch):
     """Reemplaza el loop de OpenCV: guarda con que se lo llamo y no abre ninguna ventana."""
     llamadas = []
 
-    def falsa(cfg, args, names, offsets, truth, test=None, reasons=None, target="train"):
+    def falsa(cfg, args, names, offsets, truth, test=None, reasons=None, target="train", rejected=None, refill=None):
         llamadas.append({"cfg": cfg, "args": args, "names": list(names), "truth": truth,
                          "test": test, "reasons": reasons, "target": target})
         return 0
@@ -854,7 +856,7 @@ def test_samples_label_abre_la_ventana_con_el_conjunto_de_entrenamiento(p, ui_es
     assert teach(p, "samples", "label", "r1") == 0
     (ll,) = ui_espia
     assert ll["target"] == "train" and len(ll["truth"]) == 8 and len(ll["test"]) == 2
-    assert ll["args"].truth == str(p["run"] / "truth.csv") and ll["args"].test == str(p["run"] / "test.csv")
+    assert ll["args"].truth == str(p["run"] / "teach" / "truth.csv") and ll["args"].test == str(p["run"] / "test" / "test.csv")
     assert ll["args"].frames_dir == str(p["run"] / "frames")
     assert ll["args"].templates_dir == str(p["lib"])
     assert len(ll["names"]) == 10
@@ -939,8 +941,8 @@ def test_test_eval_varias_corridas_da_una_tabla_sin_escribir_historial(p, capsys
     salida = capsys.readouterr().out
     assert sum(1 for x in salida.splitlines() if x.strip().startswith("r1")) == 1      # sin duplicados
     assert any(x.strip().startswith("r2") for x in salida.splitlines())
-    assert not (r2 / "out" / "teach_history.csv").exists()
-    assert not (p["run"] / "out" / "teach_history.csv").exists()
+    assert not (r2 / "test" / "teach_history.csv").exists()
+    assert not (p["run"] / "test" / "teach_history.csv").exists()
 
 
 def test_test_eval_sin_ids_omite_las_corridas_sin_prueba(p, capsys):
@@ -1008,7 +1010,7 @@ def test_test_eval_sin_umbrales_deja_el_veredicto_vacio(p, capsys):
 def test_test_eval_con_un_umbral_inalcanzable_manda_a_revisar(p, capsys):
     entrenar(p)
     # una pregunta de la prueba que el lector no puede acertar: se cambia el valor esperado
-    T.save_truth(p["run"] / "test.csv", [T.Sample(_nombre(100), "3.457"), T.Sample(_nombre(110), "-7.891")])
+    T.save_truth(p["run"] / "test" / "test.csv", [T.Sample(_nombre(100), "3.457"), T.Sample(_nombre(110), "-7.891")])
     capsys.readouterr()
     assert teach(p, "test", "eval", "--min-accuracy", "0.9") == 0
     salida = capsys.readouterr().out
@@ -1021,7 +1023,7 @@ def test_test_eval_con_umbral_fuera_de_rango_falla(p, capsys, flag):
     capsys.readouterr()
     assert teach(p, "test", "eval", "r1", flag, "95") == 1
     assert flag in capsys.readouterr().err
-    assert not (p["run"] / "out" / "teach_history.csv").exists()          # nada a medias
+    assert not (p["run"] / "test" / "teach_history.csv").exists()          # nada a medias
 
 
 def test_test_eval_no_escribe_batch_report(p):
@@ -1035,7 +1037,7 @@ def test_test_eval_escribe_solo_test_report_e_historial(p):
     antes = set(instantanea(p["tmp"]))
     teach(p, "test", "eval", "r1")
     nuevos = set(instantanea(p["tmp"])) - antes
-    assert {x.replace("\\", "/") for x in nuevos} == {"runs/r1/out/test_report.csv", "runs/r1/out/teach_history.csv"}
+    assert {x.replace("\\", "/") for x in nuevos} == {"runs/r1/test/test_report.csv", "runs/r1/test/teach_history.csv"}
 
 
 # ==========================================================================
@@ -1096,14 +1098,14 @@ def test_train_y_test_eval_funcionan_con_una_corrida_roi_only_completa(p, capsys
     assert "ERROR" not in salida
     fila = next(x for x in salida.splitlines() if x.strip().startswith("r1"))
     assert "100.0%" in fila
-    assert (p["run"] / "out" / "test_report.csv").exists()
+    assert (p["run"] / "test" / "test_report.csv").exists()
 
 
 def test_test_eval_migra_un_historial_viejo_y_conserva_sus_filas(p, capsys):
     """Rompe: que ``eval`` agregue una fila con el encabezado nuevo debajo de uno viejo en espanol
     (o que pierda las filas anteriores)."""
-    out = p["run"] / "out"
-    out.mkdir()
+    out = p["run"] / "test"
+    out.mkdir(parents=True, exist_ok=True)
     hist = out / "teach_history.csv"
     hist.write_text(
         "fecha,tipo,plantillas,entrenamiento,prueba,valores_distintos,correctas,erroneas,"

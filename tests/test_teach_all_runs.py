@@ -26,7 +26,7 @@ def _corrida(base, run_id, texts, sign):
         name = f"t_{i * 10:07d}.000.jpg"          # los dos videos usan los mismos nombres
         cv2.imwrite(str(run / "frames" / name), render_display(t))
         muestras.append(T.Sample(name, t.strip()))
-    T.save_truth(run / "truth.csv", muestras)
+    T.save_truth(run / "teach" / "truth.csv", muestras)
     return run
 
 
@@ -61,11 +61,11 @@ def test_nombres_repetidos_entre_corridas_no_se_pisan_en_el_leave_one_out(proyec
     cli(p, "train")
     salida = capsys.readouterr().out
     assert "sin ejemplos" not in salida
-    with (p["r1"] / "out" / "teach_report.csv").open(encoding="utf-8") as fh:
+    with (p["r1"] / "teach" / "teach_report.csv").open(encoding="utf-8") as fh:
         filas = list(csv.DictReader(fh))
     assert [f["file"] for f in filas] == [f"t_{i * 10:07d}.000.jpg" for i in range(6)]  # sin prefijo
     assert all(f["matches"] == "1" for f in filas)
-    assert (p["r2"] / "out" / "teach_report.csv").exists()
+    assert (p["r2"] / "teach" / "teach_report.csv").exists()
 
 
 def test_cada_corrida_se_recorta_con_su_propia_config(proyecto):
@@ -86,7 +86,7 @@ def test_excluir_una_corrida_la_reserva_como_prueba(proyecto, capsys):
     assert cli(p, "train", "--exclude", "r2") == 0
     salida = capsys.readouterr().out
     assert "excluidas" in salida and "r2" in salida
-    assert not (p["r2"] / "out" / "teach_report.csv").exists()
+    assert not (p["r2"] / "teach" / "teach_report.csv").exists()
     assert T.gather_runs(p["tmp"] / "runs", p["tmp"] / "calib", ["r1", "r2"]) == []
 
 
@@ -94,7 +94,7 @@ def test_la_prueba_nunca_entra(proyecto, monkeypatch):
     p = proyecto
     nombre = "t_0000999.000.jpg"
     cv2.imwrite(str(p["r1"] / "frames" / nombre), render_display("-3.333"))
-    T.save_truth(p["r1"] / "test.csv", [T.Sample(nombre, "-3.333")])
+    T.save_truth(p["r1"] / "test" / "test.csv", [T.Sample(nombre, "-3.333")])
     vistos: list[str] = []
     original = T.build_pool
 

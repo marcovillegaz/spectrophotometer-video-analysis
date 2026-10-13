@@ -115,9 +115,9 @@ def test_muestras_con_formato_invalido_se_reportan(cfg_sign, library_sign, tmp_p
 def test_informe_csv_e_historial(cfg_sign, library_sign, tmp_path):
     test = [T.Sample(frame(tmp_path, 0, "-0.245"), "-0.245")]
     rep = evaluate_test(test, cfg_sign, tmp_path, None, library_sign)
-    out = write_test_report(rep, tmp_path / "out" / "test_report.csv")
+    out = write_test_report(rep, tmp_path / "test" / "test_report.csv")
     assert "correct" in out.read_text(encoding="utf-8")
-    hist = tmp_path / "out" / "teach_history.csv"
+    hist = tmp_path / "test" / "teach_history.csv"
     append_history(hist, rep)
     append_history(hist, rep)
     filas = load_history(hist)
@@ -185,7 +185,7 @@ def test_flujo_completo_la_prueba_nunca_entra_a_la_biblioteca(proyecto, monkeypa
     p = proyecto
     assert cli(p, "samples", "add", "r1", *[f"{a}={v}" for a, v in p["train"]]) == 0
     assert cli(p, "test", "add", "r1", *[f"{a}={v}" for a, v in p["test"]]) == 0
-    assert (p["run"] / "test.csv").exists()
+    assert (p["run"] / "test" / "test.csv").exists()
 
     vistos: list[list[str]] = []
     original = T.build_pool
@@ -205,9 +205,9 @@ def test_flujo_completo_la_prueba_nunca_entra_a_la_biblioteca(proyecto, monkeypa
     salida = capsys.readouterr().out
     assert "teach test eval r1" in salida and "correct" in salida and "misma corrida" in salida
     assert cli(p, "test", "eval", "r1") == 0
-    filas = load_history(p["run"] / "out" / "teach_history.csv")
+    filas = load_history(p["run"] / "test" / "teach_history.csv")
     assert len(filas) == 2 and filas[0]["kind"] == "same_run" and filas[0]["test"] == "2"
-    with (p["run"] / "out" / "test_report.csv").open(encoding="utf-8") as fh:
+    with (p["run"] / "test" / "test_report.csv").open(encoding="utf-8") as fh:
         assert len(list(csv.DictReader(fh))) == 2
 
 
@@ -218,8 +218,8 @@ def test_mover_de_entrenamiento_a_prueba_avisa_y_deja_un_solo_conjunto(proyecto,
     capsys.readouterr()
     cli(p, "test", "add", "r1", f"{a}={v}")
     assert "ya aporto glifos" in capsys.readouterr().out
-    assert T.load_truth(p["run"] / "truth.csv") == []
-    assert [s.file for s in T.load_truth(p["run"] / "test.csv")] == [a]
+    assert T.load_truth(p["run"] / "teach" / "truth.csv") == []
+    assert [s.file for s in T.load_truth(p["run"] / "test" / "test.csv")] == [a]
 
 
 def test_suggest_para_prueba_es_al_azar_y_lejos_del_entrenamiento(proyecto, capsys):

@@ -17,6 +17,9 @@ Interfaz publica:
     uncertainty(reading, cfg)                       -> float   (menor = mas incierta)
     suggest_uncertain(...) / suggest_random(...) / suggest_uniform(...)
     suggest(strategy, ...)                          -> (list[Suggestion], list[str])
+    pick_nearest(buffer, exclude, avoid_times, gap_s, near_t) -> Suggestion | None
+    QueueRefill(fetch, batch, gap_s)(exclude, avoid_times, near_t) -> Suggestion | None
+        .give_back(sug)  .exhausted
     assign(train, test, sample, which)              -> (train, test)
     leakage(train, test, gap_s)                     -> list[(prueba, entrenamiento, dt)]
     readings_stale(readings_path, *dependencias)    -> bool
@@ -91,8 +94,13 @@ def suggest_uncertain(
     per_text: int = 2,
     window_s: float = 1.5,
     min_persist: float = MIN_PERSIST,
+    avoid_times: list[float] | None = None,
 ) -> list[Suggestion]:
-    """Los ``n`` fotogramas mas inciertos, persistentes y diversos."""
+    """Los ``n`` fotogramas mas inciertos, persistentes y diversos.
+
+    ``avoid_times`` (las muestras del otro conjunto) cuenta como ya elegido: ningun
+    fotograma queda a menos de ``min_gap_s`` de esos tiempos.
+    """
     rs = sorted(
         (r for r in readings if r.status in ("ok", "low_confidence", "spike")),
         key=lambda r: r.t_s,
@@ -122,7 +130,7 @@ def suggest_uncertain(
     candidates.sort()
 
     out: list[Suggestion] = []
-    taken: list[float] = []
+    taken: list[float] = list(avoid_times or [])
     texts: dict[str, int] = {}
     for u, i in candidates:
         r = rs[i]
@@ -254,7 +262,7 @@ def suggest(
         return suggest_uniform(items, exclude, n), notes
 
     n_u = n if strategy == "uncertain" else math.ceil(n / 2)
-    uncertain = suggest_uncertain(readings, cfg, exclude, n_u, gap_s)
+    uncertain = suggest_uncertain(readings, cfg, exclude, n_u, gap_s, avoid_times=avoid_times)
     if len(uncertain) < n_u:
         notes.append(f"solo hay {len(uncertain)} fotogramas inciertos y persistentes (pedidos {n_u}).")
     if strategy == "uncertain":
@@ -265,6 +273,62 @@ def suggest(
         (avoid_times or []) + [s.t_s for s in uncertain],
     )
     return sorted(uncertain + random_picks, key=lambda s: s.t_s), notes
+
+
+# --------------------------------------------------------------------------
+# Reposicion de la cola de etiquetado
+# --------------------------------------------------------------------------
+def pick_nearest(
+    buffer: list[Suggestion],
+    exclude: set[str],
+    avoid_times: list[float],
+    gap_s: float,
+    near_t: float,
+) -> Suggestion | None:
+    """El candidato valido de ``buffer`` mas cercano en el tiempo a ``near_t``.
+
+    Valido = fuera de ``exclude`` y a ``gap_s`` o mas de cada tiempo de ``avoid_times``.
+    Puro y determinista: ante un empate gana el de menor ``t_s`` y luego el de menor nombre.
+    """
+    valid = [s for s in buffer if s.file not in exclude and _far_enough(s.t_s, avoid_times, gap_s)]
+    return min(valid, key=lambda s: (abs(s.t_s - near_t), s.t_s, s.file), default=None)
+
+
+class QueueRefill:
+    """Repone de a un fotograma la cola de ``label --queue`` cuando se descarta uno.
+
+    ``fetch(exclude, avoid_times, n, round) -> (list[Suggestion], avisos)`` pide un lote
+    de sugerencias con la semilla de la ronda. Se pide un lote y no uno por vez porque con
+    ``n=1`` el muestreo al azar pierde la estratificacion y ``mixed`` degenera en
+    ``uncertain``. Mientras el lote alcance se entrega desde ahi; cuando se agota se pide
+    otro y, si viene vacio, queda ``exhausted``.
+    """
+
+    def __init__(self, fetch, batch: int, gap_s: float) -> None:
+        self.fetch, self.batch, self.gap_s = fetch, max(int(batch), 1), gap_s
+        self.buffer: list[Suggestion] = []
+        self.round = 0
+        self.exhausted = False
+
+    def __call__(self, exclude: set[str], avoid_times: list[float], near_t: float) -> Suggestion | None:
+        pick = pick_nearest(self.buffer, exclude, avoid_times, self.gap_s, near_t)
+        if pick is None and not self.exhausted:
+            self.round += 1
+            held = {s.file for s in self.buffer}
+            fresh, _ = self.fetch(exclude | held, avoid_times, self.batch, self.round)
+            if not fresh:
+                self.exhausted = True
+            self.buffer += [s for s in fresh if s.file not in held]
+            pick = pick_nearest(self.buffer, exclude, avoid_times, self.gap_s, near_t)
+        if pick is not None:
+            self.buffer.remove(pick)
+        return pick
+
+    def give_back(self, sug: Suggestion) -> None:
+        """Devuelve al lote un fotograma que se repuso y despues se deshizo."""
+        if all(s.file != sug.file for s in self.buffer):
+            self.buffer.append(sug)
+        self.exhausted = False
 
 
 # --------------------------------------------------------------------------

@@ -49,10 +49,10 @@ NOMBRES = [_nombre(i) for i in range(len(TEXTOS))]
 def _params(base, seed=None) -> TeachParams:
     return TeachParams(
         frames_dir=str(base / "frames"), templates_dir=str(base / "calib" / "templates"),
-        max_per_label=3, gap=0.0, truth=str(base / "truth.csv"), test=str(base / "test.csv"),
-        teach_report=str(base / "out" / "teach_report.csv"),
-        test_report=str(base / "out" / "test_report.csv"),
-        history=str(base / "out" / "teach_history.csv"), seed=seed,
+        max_per_label=3, gap=0.0, truth=str(base / "teach" / "truth.csv"), test=str(base / "test" / "test.csv"),
+        teach_report=str(base / "teach" / "teach_report.csv"),
+        test_report=str(base / "test" / "test_report.csv"),
+        history=str(base / "test" / "teach_history.csv"), seed=seed,
     )
 
 
@@ -143,8 +143,8 @@ def test_add_persiste_truth_csv_y_no_crea_test_csv_si_no_hay_prueba(tmp_path):
     _ir_a(s, 1)
     _escribir(s, "4.567")
     s.act("add")
-    assert [x.file for x in T.load_truth(tmp_path / "truth.csv")] == [NOMBRES[1]]
-    assert not (tmp_path / "test.csv").exists()
+    assert [x.file for x in T.load_truth(tmp_path / "teach" / "truth.csv")] == [NOMBRES[1]]
+    assert not (tmp_path / "test" / "test.csv").exists()
 
 
 def test_add_con_conjunto_prueba_escribe_test_csv_y_no_entra_a_entrenamiento(tmp_path):
@@ -154,8 +154,8 @@ def test_add_con_conjunto_prueba_escribe_test_csv_y_no_entra_a_entrenamiento(tmp
     _escribir(s, "-7.890")
     s.act("add")
     assert s.samples == [] and [x.file for x in s.test] == [NOMBRES[9]]
-    assert [x.file for x in T.load_truth(tmp_path / "test.csv")] == [NOMBRES[9]]
-    assert T.load_truth(tmp_path / "truth.csv") == []
+    assert [x.file for x in T.load_truth(tmp_path / "test" / "test.csv")] == [NOMBRES[9]]
+    assert T.load_truth(tmp_path / "teach" / "truth.csv") == []
 
 
 def test_target_alterna_y_mover_de_entrenamiento_a_prueba_avisa(tmp_path):
@@ -172,44 +172,44 @@ def test_target_alterna_y_mover_de_entrenamiento_a_prueba_avisa(tmp_path):
     assert "reemplaza la biblioteca" in s.state.message
 
 
-def test_remove_quita_de_los_dos_conjuntos_y_persiste(tmp_path):
-    """Rompe: ``_remove`` que solo quite de ``samples`` o que no persista."""
+def test_descartar_quita_de_los_dos_conjuntos_y_persiste(tmp_path):
+    """Rompe: ``_discard`` que solo quite de ``samples`` o que no persista."""
     s = _sesion(tmp_path, n_train=3, n_test=2)
     _ir_a(s, 1)
-    s.act("remove")
+    s.act("discard")
     assert NOMBRES[1] not in [x.file for x in s.samples]
-    assert s.state.message == "muestra quitada" and s.state.text == ""
-    assert NOMBRES[1] not in [x.file for x in T.load_truth(tmp_path / "truth.csv")]
-    _ir_a(s, 8)
-    s.act("remove")
+    assert s.state.message.startswith("descartado")
+    assert NOMBRES[1] not in [x.file for x in T.load_truth(tmp_path / "teach" / "truth.csv")]
+    _ir_a(s, s.names.index(NOMBRES[8]))      # la cola bajo en uno al descartar
+    s.act("discard")
     assert NOMBRES[8] not in [x.file for x in s.test]
-    assert NOMBRES[8] not in [x.file for x in T.load_truth(tmp_path / "test.csv")]
+    assert NOMBRES[8] not in [x.file for x in T.load_truth(tmp_path / "test" / "test.csv")]
 
 
-def test_remove_de_un_fotograma_sin_muestra_no_rompe_nada(tmp_path):
-    """Rompe: ``remove_sample`` que lance si el archivo no esta."""
+def test_descartar_un_fotograma_sin_muestra_no_rompe_nada(tmp_path):
+    """Rompe: ``_discard`` que lance si el archivo no esta."""
     s = _sesion(tmp_path, n_train=2)
     _ir_a(s, 6)
-    s.act("remove")
-    assert len(s.samples) == 2 and s.state.message == "muestra quitada"
+    s.act("discard")
+    assert len(s.samples) == 2 and s.state.message.startswith("descartado")
 
 
 def test_persist_con_prueba_vacia_pero_archivo_existente_lo_deja_vacio(tmp_path):
     """Rompe: no reescribir ``test.csv`` cuando se quitan todas las muestras de prueba."""
     s = _sesion(tmp_path, n_train=0, n_test=1, con_biblioteca=False)
     s.persist()
-    assert len(T.load_truth(tmp_path / "test.csv")) == 1
+    assert len(T.load_truth(tmp_path / "test" / "test.csv")) == 1
     _ir_a(s, 8)
-    s.act("remove")
-    assert T.load_truth(tmp_path / "test.csv") == []
+    s.act("discard")
+    assert T.load_truth(tmp_path / "test" / "test.csv") == []
 
 
 def test_persist_escribe_los_dos_archivos(tmp_path):
     """Rompe: ``persist`` que olvide uno de los dos conjuntos."""
     s = _sesion(tmp_path, n_train=2, n_test=2, con_biblioteca=False)
     s.persist()
-    assert len(T.load_truth(tmp_path / "truth.csv")) == 2
-    assert len(T.load_truth(tmp_path / "test.csv")) == 2
+    assert len(T.load_truth(tmp_path / "teach" / "truth.csv")) == 2
+    assert len(T.load_truth(tmp_path / "test" / "test.csv")) == 2
 
 
 # ==========================================================================
@@ -424,7 +424,7 @@ def test_validate_deja_el_resultado_y_el_reporte_sin_tocar_la_biblioteca(tmp_pat
     antes = {f.name: f.read_bytes() for f in (tmp_path / "calib" / "templates").glob("*.png")}
     assert _pedido(s, "validate") == "validate"
     assert any("leave-one-out" in ln for ln in s.result)
-    assert s.state.message == "" and (tmp_path / "out" / "teach_report.csv").exists()
+    assert s.state.message == "" and (tmp_path / "teach" / "teach_report.csv").exists()
     assert {f.name: f.read_bytes() for f in (tmp_path / "calib" / "templates").glob("*.png")} == antes
     assert L.list_backups(tmp_path / "calib" / "templates") == []
 
@@ -434,7 +434,7 @@ def test_validate_sin_muestras_validas_lo_dice(tmp_path):
     s = _sesion(tmp_path, n_train=0, con_biblioteca=False)
     _pedido(s, "validate")
     assert s.result == ["No hay muestras validas."]
-    assert not (tmp_path / "out" / "teach_report.csv").exists()
+    assert not (tmp_path / "teach" / "teach_report.csv").exists()
 
 
 def test_validate_informa_las_muestras_descartadas(tmp_path):
@@ -488,7 +488,7 @@ def test_eval_sin_muestras_de_prueba_lo_dice(tmp_path):
     s = _sesion(tmp_path)
     _pedido(s, "eval")
     assert s.result[0] == "No hay muestras de prueba."
-    assert not (tmp_path / "out" / "test_report.csv").exists()
+    assert not (tmp_path / "test" / "test_report.csv").exists()
 
 
 def test_eval_sin_biblioteca_lo_dice(tmp_path):
@@ -496,15 +496,15 @@ def test_eval_sin_biblioteca_lo_dice(tmp_path):
     s = _sesion(tmp_path, n_train=2, n_test=2, con_biblioteca=False)
     _pedido(s, "eval")
     assert s.result == ["No hay biblioteca vigente: agrega muestras a la biblioteca primero."]
-    assert not (tmp_path / "out" / "test_report.csv").exists()
+    assert not (tmp_path / "test" / "test_report.csv").exists()
 
 
 def test_eval_escribe_reporte_e_historial_con_huella(tmp_path):
     """Rompe: no pasar ``huella`` al historial o no escribir ``test_report.csv``."""
     s = _sesion(tmp_path, n_train=8, n_test=2)
     _pedido(s, "eval")
-    assert (tmp_path / "out" / "test_report.csv").exists()
-    hist = (tmp_path / "out" / "teach_history.csv").read_text(encoding="utf-8")
+    assert (tmp_path / "test" / "test_report.csv").exists()
+    hist = (tmp_path / "test" / "teach_history.csv").read_text(encoding="utf-8")
     assert L.fingerprint(tmp_path / "calib" / "templates") in hist
     assert s.result and s.state.message == ""
 
@@ -857,7 +857,7 @@ def test_el_pool_se_reconstruye_al_quitar_una_muestra(tmp_path, cuenta_pool):
     cuenta_pool.clear()  # la sesion armo la biblioteca con el mismo build_pool
     s.refresh_library()
     _ir_a(s, 1)
-    s.act("remove")
+    s.act("discard")
     s.refresh_library()
     assert len(cuenta_pool) == 2 and NOMBRES[1] not in cuenta_pool[1]
 

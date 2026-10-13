@@ -61,8 +61,8 @@ def proyecto(tmp_path):
     for i, t in enumerate(TEST_TEXTS):
         cv2.imwrite(str(run / "frames" / _nombre(100 + i * 10)), render_display(t))
         test.append(T.Sample(_nombre(100 + i * 10), t.strip()))
-    T.save_truth(run / "truth.csv", train)
-    T.save_truth(run / "test.csv", test)
+    T.save_truth(run / "teach" / "truth.csv", train)
+    T.save_truth(run / "test" / "test.csv", test)
     glob = ["--runs-dir", str(tmp_path / "runs"), "--calib-dir", str(tmp_path / "calib")]
     return {"glob": glob, "run": run, "lib": tmp_path / "calib" / "templates", "tmp": tmp_path}
 
@@ -81,7 +81,7 @@ def test_check_valida_y_escribe_solo_el_informe_sin_tocar_la_biblioteca(proyecto
     assert "no hay biblioteca vigente todavia" in salida
     assert "0:4  1:3  2:3  3:3  4:4  5:3  6:3  7:3  8:3  9:3" in salida
     assert not p["lib"].exists() or not list(p["lib"].glob("*.png"))
-    assert _contar(p["run"] / "out" / "teach_report.csv") == 8
+    assert _contar(p["run"] / "teach" / "teach_report.csv") == 8
 
 
 def test_train_escribe_una_plantilla_por_caracter_y_el_informe(proyecto, capsys):
@@ -94,7 +94,7 @@ def test_train_escribe_una_plantilla_por_caracter_y_el_informe(proyecto, capsys)
     nombres = sorted(f.name for f in p["lib"].glob("*.png"))
     esperados = sorted([f"{c}_0.png" for c in "0123456789"] + ["dot_0.png", "minus_0.png"])
     assert nombres == esperados
-    assert _contar(p["run"] / "out" / "teach_report.csv") == 8
+    assert _contar(p["run"] / "teach" / "teach_report.csv") == 8
     # lo que se escribe se puede volver a cargar y tiene las etiquetas esperadas
     assert {t.label for t in load_templates(p["lib"])} == set("0123456789.-")
 
@@ -130,7 +130,7 @@ def test_test_eval_escribe_informe_e_historial_con_cifras_clave(proyecto, capsys
     assert "teach test eval r1" in salida and "misma corrida" in salida
     assert "2 muestras, 2 valores distintos" in salida
     assert "correctas 2/2 = 100.0%" in salida and "cobertura 100.0%" in salida
-    out = p["run"] / "out"
+    out = p["run"] / "test"
     assert _contar(out / "test_report.csv") == 2
     filas = load_history(out / "teach_history.csv")
     assert len(filas) == 1 and list(filas[0]) == HISTORY_FIELDS
@@ -164,7 +164,7 @@ def test_test_eval_sin_corrida_da_una_fila_por_corrida_con_prueba(proyecto, caps
 def test_test_eval_sin_ninguna_prueba_avisa_y_sale_con_0(proyecto, capsys):
     p = proyecto
     teach(p, "train", "r1")
-    (p["run"] / "test.csv").unlink()
+    (p["run"] / "test" / "test.csv").unlink()
     capsys.readouterr()
     assert teach(p, "test", "eval") == 0
     assert "ninguna corrida tiene test.csv" in capsys.readouterr().out
@@ -180,15 +180,15 @@ def test_train_sin_corridas_junta_las_muestras_y_escribe_un_informe_por_corrida(
     for i, t in enumerate(["0.333", "4.567", "8.901", "2.045", "6.789"]):
         cv2.imwrite(str(r2 / "frames" / _nombre(i * 10)), render_display(t))   # mismos nombres que r1
         muestras.append(T.Sample(_nombre(i * 10), t))
-    T.save_truth(r2 / "truth.csv", muestras)
+    T.save_truth(r2 / "teach" / "truth.csv", muestras)
     assert teach(p, "train") == 0
     salida = capsys.readouterr().out
     assert "== teach train ==" in salida
     assert "8 muestras de entrenamiento" in salida and "5 muestras de entrenamiento" in salida
     assert "13/13 lecturas exactas" in salida
     assert (p["lib"] / "minus_0.png").exists() and (p["lib"] / "dot_0.png").exists()
-    assert _contar(p["run"] / "out" / "teach_report.csv") == 8
-    assert _contar(r2 / "out" / "teach_report.csv") == 5
+    assert _contar(p["run"] / "teach" / "teach_report.csv") == 8
+    assert _contar(r2 / "teach" / "teach_report.csv") == 5
 
 
 @pytest.mark.parametrize(
@@ -206,8 +206,8 @@ def test_errores_de_teach_dan_codigo_1_y_mensaje(proyecto, capsys, args, fragmen
 
 def test_train_sin_muestras_da_error_claro_y_no_escribe_nada(proyecto, capsys):
     p = proyecto
-    (p["run"] / "truth.csv").unlink()
-    (p["run"] / "test.csv").unlink()
+    (p["run"] / "teach" / "truth.csv").unlink()
+    (p["run"] / "test" / "test.csv").unlink()
     assert teach(p, "train", "r1") == 1
     assert "no tiene muestras de entrenamiento" in capsys.readouterr().err
     assert teach(p, "train") == 1                                         # sin id: ninguna corrida sirve
@@ -218,17 +218,17 @@ def test_train_sin_muestras_da_error_claro_y_no_escribe_nada(proyecto, capsys):
 def test_test_eval_sin_prueba_da_error_claro(proyecto, capsys):
     p = proyecto
     assert teach(p, "train", "r1") == 0
-    (p["run"] / "test.csv").unlink()
+    (p["run"] / "test" / "test.csv").unlink()
     capsys.readouterr()
     assert teach(p, "test", "eval", "r1") == 1
     assert "No hay muestras de prueba" in capsys.readouterr().err
-    assert not (p["run"] / "out" / "teach_history.csv").exists()          # nada a medias
+    assert not (p["run"] / "test" / "teach_history.csv").exists()          # nada a medias
 
 
 def test_test_eval_sin_biblioteca_da_error_claro(proyecto, capsys):
     assert teach(proyecto, "test", "eval", "r1") == 1
     assert "templates" in capsys.readouterr().err
-    assert not (proyecto["run"] / "out" / "teach_history.csv").exists()   # nada a medias
+    assert not (proyecto["run"] / "test" / "teach_history.csv").exists()   # nada a medias
 
 
 # ==========================================================================

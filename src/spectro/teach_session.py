@@ -2,12 +2,17 @@
 
 ``teach_ui`` dibuja y lee eventos; todo lo que decide vive aca para poder testearlo
 sin pantalla ni OpenCV: el estado (``TeachState``), el reducer unico de acciones
-(``apply_action``), las muestras de entrenamiento y prueba, la biblioteca, los pedidos
-que tocan archivos (agregar/reemplazar/validar/evaluar, borrar/restaurar/reetiquetar)
-y la traduccion de teclas a acciones.
+(``apply_action``), las muestras de entrenamiento y prueba, los fotogramas descartados,
+la biblioteca, los pedidos que tocan archivos (agregar/reemplazar/validar/evaluar,
+borrar/restaurar/reetiquetar) y la traduccion de teclas a acciones.
+
+Descartar un fotograma (``discard``) borra su muestra si la tenia, lo registra en
+``rejected.csv`` y, si hay un ``refill`` (``label --queue N``), pone en su lugar el
+candidato mas cercano en el tiempo para que la cola siga con N fotogramas utilizables.
+``undo_discard`` lo deshace (pila LIFO): devuelve el fotograma y su muestra.
 
 Flujo de una accion: ``TeachSession.act(accion)`` aplica ``apply_action``; si el
-reducer deja un ``request`` de datos (``add``, ``remove``) la sesion lo ejecuta en el
+reducer deja un ``request`` de datos (``add``, ``discard``, ``undo_discard``) la sesion lo ejecuta en el
 acto; los demas pedidos (``validate``, ``add_lib``, ``replace``, ``eval``, ``del_one``,
 ...) los toma el loop con ``begin_request`` / ``run_request`` para poder dibujar
 ``trabajando...`` antes de los lentos (``SLOW_REQUESTS``).
@@ -17,11 +22,14 @@ Interfaz publica:
     go_to(state, samples, names, index) -> TeachState
     add_sample(train, test, file, text, digits, which) -> AddResult
     AddResult(train, test, message, added)            remove_sample(samples, file) -> samples
-    TeachParams(frames_dir, templates_dir, ..., seed)  TeachParams.from_context(ctx, max_per_label, gap, seed)
-    TeachSession(cfg, params, names, offsets, samples, test, reasons, target)
+    Discard(file, index, reason, sample, sample_set, replacement)   (un descarte, para deshacerlo)
+    labeled_in_queue(names, samples, test) -> int     (fotogramas de la cola con muestra)
+    TeachParams(frames_dir, templates_dir, ..., seed, rejected)  TeachParams.from_context(ctx, max_per_label, gap, seed)
+    TeachSession(cfg, params, names, offsets, samples, test, reasons, target, rejected, refill)
         .act(action)  .on_key(k)  .begin_request() -> str  .is_slow(kind) -> bool  .run_request(kind)
         .frame(index)  .persist()  .refresh_library() -> list[str]
-        .state .samples .test .library .result .entries .trash .backup_path
+        .state .names .samples .test .rejected .library .result .entries .trash .backup_path
+        .can_undo_discard -> bool
     key_to_action(k, lib_mode) -> str | None
     COLS, ROWS, PER_PAGE (grilla de la biblioteca)    SLOW_REQUESTS, CONFIRM_ACTIONS
     KEY_BACKSPACE, KEY_LEFT, KEY_RIGHT (teclas; KEY_ESC y KEY_ENTER vienen de ui_common)
@@ -37,9 +45,11 @@ from pathlib import Path
 from . import library as lib_mod
 from . import teach as T
 from .config import Config, DigitsConfig
-from .extract import load_roi_sidecar
+from .extract import load_roi_sidecar, time_from_name
 from .imaging import load_frame
 from .read import read_frame
+from .rejected import Rejection, add_rejected, now_text, rejected_files, remove_rejected, save_rejected
+from .sampling import Suggestion, assign
 from .ui_common import KEY_ENTER, KEY_ESC
 
 # grilla de la biblioteca (el layout la dibuja; el reducer pagina con ella)
@@ -130,7 +140,7 @@ def apply_action(
         return replace(state, color=not state.color)
     if action in ("validate", "add_lib", "undo", "eval"):
         return replace(state, request=action)
-    if state.mode == "samples" and action in ("add", "remove"):
+    if state.mode == "samples" and action in ("add", "discard", "undo_discard"):
         return replace(state, request=action)
     if action == "target":
         return replace(state, target="test" if state.target == "train" else "train", message="")
@@ -155,6 +165,34 @@ def apply_action(
 
 def remove_sample(samples: list[T.Sample], file: str) -> list[T.Sample]:
     return [s for s in samples if s.file != file]
+
+
+def labeled_in_queue(
+    names: list[str], samples: list[T.Sample], test: list[T.Sample],
+) -> int:
+    """Cuantos fotogramas de la cola tienen muestra (entrenamiento o prueba).
+
+    Cuenta fotogramas de ``names``, no muestras: las que caen fuera de la cola no suman.
+    """
+    con = {s.file for s in samples} | {s.file for s in test}
+    return sum(1 for n in names if n in con)
+
+
+@dataclass(frozen=True)
+class Discard:
+    """Un descarte, con lo necesario para deshacerlo (la sesion los apila)."""
+
+    file: str
+    #: Posicion que ocupaba en la cola.
+    index: int
+    #: Por que se habia sugerido (para devolverlo a la cola tal cual).
+    reason: str
+    #: La muestra que se borro, o ``None`` si no tenia.
+    sample: T.Sample | None
+    #: Conjunto de esa muestra (``train`` o ``test``), o ``""`` si no tenia.
+    sample_set: str
+    #: El fotograma que entro en su lugar, o ``None`` si la cola bajo.
+    replacement: str | None
 
 
 @dataclass(frozen=True)
@@ -220,6 +258,8 @@ class TeachParams:
     history: str
     #: Semilla del boton ``Aleatorio``; ``None`` = no determinista.
     seed: int | None = None
+    #: ``rejected.csv`` de la corrida; ``""`` = no se registran descartes en disco.
+    rejected: str = ""
 
     @classmethod
     def from_context(cls, ctx, max_per_label: int, gap: float, seed: int | None = None) -> TeachParams:
@@ -229,7 +269,7 @@ class TeachParams:
             frames_dir=str(ctx.frames_dir), templates_dir=str(ctx.templates_dir),
             max_per_label=max_per_label, gap=gap, truth=str(run.truth), test=str(run.test),
             teach_report=str(run.teach_report), test_report=str(run.test_report),
-            history=str(run.history), seed=seed,
+            history=str(run.history), seed=seed, rejected=str(run.rejected),
         )
 
 
@@ -246,9 +286,17 @@ class TeachSession:
         test: list[T.Sample] | None = None,
         reasons: dict[str, str] | None = None,
         target: str = "train",
+        rejected: list[Rejection] | None = None,
+        refill=None,
     ) -> None:
-        self.cfg, self.params, self.names, self.offsets = cfg, params, names, offsets
-        self.reasons = reasons or {}
+        # La cola cambia al descartar (se repone o baja): la sesion tiene su propia copia.
+        self.cfg, self.params, self.names, self.offsets = cfg, params, list(names), offsets
+        names = self.names
+        self.reasons = dict(reasons or {})
+        self.rejected = list(rejected or [])
+        #: ``refill(exclude, avoid_times, near_t) -> Suggestion | None`` (``sampling.QueueRefill``).
+        self.refill = refill
+        self._discards: list[Discard] = []
         self.frames_dir = Path(params.frames_dir)
         self.frames_roi = load_roi_sidecar(self.frames_dir)
         self.samples, self.test = list(samples), list(test or [])
@@ -270,7 +318,7 @@ class TeachSession:
             "eval": self._run_eval,
             **{k: partial(self._run_build, k) for k in ("validate", "add_lib", "replace")},
         }
-        self._data = {"add": self._add, "remove": self._remove}
+        self._data = {"add": self._add, "discard": self._discard, "undo_discard": self._undo_discard}
         self._lib_ops = {
             "del_one": (self._del_one, True), "del_label": (self._del_label, True),
             "undo": (self._undo, False), "relabel": (self._relabel, True),
@@ -284,7 +332,12 @@ class TeachSession:
             return []
 
     def frame(self, index: int):
-        """``(gray, color, offset, lectura)`` del fotograma ``index`` (con cache de uno)."""
+        """``(gray, color, offset, lectura)`` del fotograma ``index`` (con cache de uno).
+
+        Con la cola vacia no hay fotograma: devuelve ``(None, None, (0, 0), None)``.
+        """
+        if not 0 <= index < len(self.names):
+            return None, None, (0, 0), None
         if self._frame is None or self._frame[0] != index:
             path = self.frames_dir / self.names[index]
             gray = load_frame(path, self.cfg)
@@ -298,6 +351,8 @@ class TeachSession:
         T.save_truth(self.params.truth, self.samples)
         if self.test or Path(self.params.test).exists():
             T.save_truth(self.params.test, self.test)
+        if self.params.rejected and (self.rejected or Path(self.params.rejected).exists()):
+            save_rejected(self.params.rejected, self.rejected)
 
     def refresh_library(self) -> list[str]:
         """Recarga la biblioteca y mide su efecto sobre las muestras (usos, errores, exactitud)."""
@@ -352,11 +407,17 @@ class TeachSession:
         return kind in SLOW_REQUESTS or (bool(kind) and self._cold_pool())
 
     # -- acciones
+    @property
+    def can_undo_discard(self) -> bool:
+        return bool(self._discards)
+
     def _value_of(self, index: int) -> str:
+        if not 0 <= index < len(self.names):
+            return ""
         return next((s.value for s in self.samples + self.test if s.file == self.names[index]), "")
 
     def act(self, action: str) -> None:
-        """Aplica una accion con el reducer; ejecuta en el acto las de datos (``add``, ``remove``)."""
+        """Aplica una accion con el reducer; ejecuta en el acto las de datos (``add``, ``discard``, ``undo_discard``)."""
         st = self.state
         self.state = new = apply_action(
             st, action, len(self.names), len(self.entries), self._value_of, self._rng)
@@ -371,6 +432,9 @@ class TeachSession:
             self.act(action)
 
     def _add(self, st: TeachState) -> None:
+        if not self.names:
+            self.state = replace(st, message="la cola esta vacia")
+            return
         res = add_sample(self.samples, self.test, self.names[st.index], st.text, self.cfg.digits, st.target)
         self.samples, self.test = res.train, res.test
         self.state = replace(st, message=res.message)
@@ -379,12 +443,72 @@ class TeachSession:
             self.state = go_to(self.state, self.samples + self.test, self.names, st.index + 1)
             self.state = replace(self.state, message=res.message)
 
-    def _remove(self, st: TeachState) -> None:
-        name = self.names[st.index]
+    def _labeled(self) -> set[str]:
+        return {s.file for s in self.samples + self.test}
+
+    def _discard(self, st: TeachState) -> None:
+        """Descarta el fotograma actual: borra su muestra, lo registra y lo repone (si hay ``refill``)."""
+        if not self.names:
+            self.state = replace(st, message="la cola esta vacia")
+            return
+        i = st.index
+        name = self.names[i]
+        sample = next((s for s in self.samples if s.file == name), None)
+        sample_set = "train" if sample else ""
+        if sample is None:
+            sample = next((s for s in self.test if s.file == name), None)
+            sample_set = "test" if sample else ""
         self.samples = remove_sample(self.samples, name)
         self.test = remove_sample(self.test, name)
-        self.state = replace(st, text="", message="muestra quitada")
+        self.rejected = add_rejected(self.rejected, name, sample_set or st.target, now_text())
+
+        replacement = None
+        if self.refill is not None:
+            other = self.test if st.target == "train" else self.samples
+            exclude = set(self.names) | self._labeled() | rejected_files(self.rejected)
+            avoid = [time_from_name(n) for k, n in enumerate(self.names) if k != i]
+            avoid += [time_from_name(s.file) for s in other] + [time_from_name(name)]
+            replacement = self.refill(exclude, avoid, time_from_name(name))
+        self._discards.append(Discard(name, i, self.reasons.get(name, ""), sample, sample_set,
+                                      replacement.file if replacement else None))
+        if replacement is not None:
+            self.names[i] = replacement.file
+            self.reasons[replacement.file] = replacement.reason
+            msg = f"descartado; en su lugar {replacement.file}"
+        else:
+            del self.names[i]
+            msg = "descartado" + (" (sin repuesto: la cola baja)" if self.refill is not None else "")
+        self._frame = None  # el cache es por indice: el fotograma de ese indice cambio
         self.persist()
+        self.state = replace(go_to(st, self.samples + self.test, self.names, i), message=msg)
+
+    def _undo_discard(self, st: TeachState) -> None:
+        """Deshace el ultimo descarte: devuelve el fotograma y su muestra, y lo saca de ``rejected``."""
+        if not self._discards:
+            self.state = replace(st, message="nada que deshacer")
+            return
+        d = self._discards.pop()
+        self.rejected, _ = remove_rejected(self.rejected, [d.file])
+        if d.sample is not None:
+            self.samples, self.test = assign(self.samples, self.test, d.sample, d.sample_set)
+        msg = "descarte deshecho"
+        at = min(d.index, len(self.names))
+        if d.replacement is not None and d.replacement in self.names:
+            at = self.names.index(d.replacement)
+            if d.replacement in self._labeled():
+                msg = "descarte deshecho; el repuesto ya tiene muestra y se queda: la cola sube en uno"
+                self.names.insert(at, d.file)
+            else:
+                self.names[at] = d.file
+                if self.refill is not None:
+                    self.refill.give_back(Suggestion(
+                        d.replacement, self.reasons.get(d.replacement, ""), time_from_name(d.replacement)))
+        else:
+            self.names.insert(at, d.file)
+        self.reasons[d.file] = d.reason
+        self._frame = None
+        self.persist()
+        self.state = replace(go_to(st, self.samples + self.test, self.names, at), message=msg)
 
     # -- pedidos que tocan archivos
     def begin_request(self) -> str:

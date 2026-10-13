@@ -6,7 +6,9 @@ Dos modos, que se alternan con ``Gestionar biblioteca`` / ``Volver a muestras``:
   debajo de cada celda, el caracter que le corresponde segun el valor tipeado y lo que
   lee hoy el lector. A la derecha, el panel: navegacion, valor por teclado fisico,
   cobertura de caracteres y los botones ``Agregar a biblioteca`` (suma sin duplicar),
-  ``Reemplazar biblioteca`` (pide confirmacion) y ``Validar``.
+  ``Reemplazar biblioteca`` (pide confirmacion) y ``Validar``. ``Descartar`` saca el
+  fotograma de la cola (borra su muestra, lo registra y, con ``--queue``, lo repone) y
+  ``Deshacer descarte`` lo devuelve.
 * **biblioteca**: una grilla con las plantillas de ``calib/templates``. Se elige una
   y se puede borrar, borrar todas las de un caracter, cambiarle la etiqueta o deshacer
   el ultimo borrado. Cada plantilla muestra cuantas celdas de las muestras gana bien y
@@ -19,7 +21,8 @@ este modulo solo dibuja y lee eventos.
 Interfaz publica:
     layout_teach(...) -> TLayout          tile_rect(i) -> (x, y, w, h)
     render_teach(view) -> (canvas, TLayout)
-    run_teach_ui(cfg, params: TeachParams, names, offsets, samples) -> int
+    TeachView(..., n_rejected, can_undo_discard)
+    run_teach_ui(cfg, params: TeachParams, names, offsets, samples, test, reasons, target, rejected, refill) -> int
 """
 
 from __future__ import annotations
@@ -56,7 +59,14 @@ from .ui_common import (
     slot_color,
     window_closed,
 )
-from .teach_session import COLS, PER_PAGE, TeachParams, TeachSession, TeachState
+from .teach_session import (
+    COLS,
+    PER_PAGE,
+    TeachParams,
+    TeachSession,
+    TeachState,
+    labeled_in_queue,
+)
 
 VIEW_W = 760
 HEIGHT = 800
@@ -126,9 +136,10 @@ def layout_teach(
         b.append(Button(act, px + i * (q + 6), 78, q, 28, lab))
     b.append(Button("random", px, 112, half, 28, "Aleatorio"))
     b.append(Button("color", px + half + 6, 112, half, 28, "Color / binario"))
-    b.append(Button("clear", px, 248, inner, 32, "Borrar todo"))
-    b.append(Button("add", px, 290, 2 * q + 6 + q + 6, 32, "Agregar muestra"))
-    b.append(Button("remove", px + 3 * (q + 6), 290, q, 32, "Quitar"))
+    b.append(Button("clear", px, 248, half, 32, "Borrar todo"))
+    b.append(Button("undo_discard", px + half + 6, 248, half, 32, "Deshacer descarte"))
+    b.append(Button("add", px, 290, 2 * q + 6, 32, "Agregar muestra"))
+    b.append(Button("discard", px + 2 * (q + 6), 290, 2 * q + 6, 32, "Descartar"))
     b.append(Button("add_lib", px, 452, half, 32, "Agregar a biblioteca"))
     b.append(Button("replace", px + half + 6, 452, half, 32,
                     f"Confirmar: reemplaza {lib_size}" if confirm == "replace"
@@ -166,6 +177,10 @@ class TeachView:
     reasons: dict[str, str] = field(default_factory=dict)
     #: ROI que ``extract --roi-only`` ya aplico a los fotogramas (``None`` si son completos).
     frames_roi: ROI | None = None
+    #: Fotogramas en ``rejected.csv`` de la corrida.
+    n_rejected: int = 0
+    #: Hay un descarte para deshacer (enciende ``Deshacer descarte``).
+    can_undo_discard: bool = False
 
 
 def _fit(img: np.ndarray, box: tuple[int, int, int, int], max_zoom: float = 12.0):
@@ -257,6 +272,8 @@ def render_teach(view: TeachView) -> tuple[np.ndarray, TLayout]:
         cv2.rectangle(canvas, (tx + int(roi.x * tf) - 3, ty + int(roi.y * tf) - 3),
                       (tx + int((roi.x + roi.w) * tf) + 3, ty + int((roi.y + roi.h) * tf) + 3),
                       YELLOW, 2)
+    elif not view.names:
+        draw_text(canvas, "Cola vacia: Deshacer descarte o Guardar y salir", 20, 60, 0.6, BAD_C)
     else:
         draw_text(canvas, "Sin ROI: calibra primero con calibrate", 20, 60, 0.6, BAD_C)
 
@@ -273,8 +290,12 @@ def render_teach(view: TeachView) -> tuple[np.ndarray, TLayout]:
     if reason:
         draw_text(canvas, reason[:24], px + 190, 52, 0.38, YELLOW)
     t_s = time_from_name(name) if name else 0.0
-    draw_text(canvas, f"{st.index + 1}/{len(view.names)}   t={t_s:.2f} s   {status}",
-          px, 70, 0.4, OK_C if has else DIM)
+    n_con = labeled_in_queue(view.names, view.samples, view.test)
+    draw_text(canvas, f"{st.index + 1 if view.names else 0}/{len(view.names)} en cola · {n_con} con muestra"
+          f"   t={t_s:.2f} s", px, 32, 0.4, FG)
+    draw_text(canvas, status, px, 70, 0.4, OK_C if has else DIM)
+    if view.n_rejected:
+        draw_text(canvas, f"{view.n_rejected} descartados", px + 200, 70, 0.4, DIM)
     fx, fy, fw, fh = lay.field
     cv2.rectangle(canvas, (fx, fy), (fx + fw, fy + fh), (20, 20, 20), -1)
     cv2.rectangle(canvas, (fx, fy), (fx + fw, fy + fh), BTN_ON if st.text else (110, 110, 110), 1)
@@ -291,6 +312,10 @@ def render_teach(view: TeachView) -> tuple[np.ndarray, TLayout]:
             col = BAD_C
         if b.action == "add" and ok:
             col = OK_C
+        if b.action == "discard":
+            col = (60, 60, 150)
+        if b.action == "undo_discard" and not view.can_undo_discard:
+            col = (55, 55, 55)
         draw_button(canvas, b, active, col)
 
     # -- muestras y cobertura
@@ -393,7 +418,7 @@ def _view(s: TeachSession) -> TeachView:
     gray, color, off, reading = s.frame(s.state.index)
     return TeachView(s.state, s.cfg, s.names, gray, color, off, s.samples, reading,
                      len(s.library), s.result, s.entries, bool(s.trash), s.test, s.reasons,
-                     s.frames_roi)
+                     s.frames_roi, len(s.rejected), s.can_undo_discard)
 
 
 def run_teach_ui(
@@ -405,16 +430,20 @@ def run_teach_ui(
     test: list[T.Sample] | None = None,
     reasons: dict[str, str] | None = None,
     target: str = "train",
+    rejected: list | None = None,
+    refill=None,
 ) -> int:
-    """Abre la ventana de ``teach``. Entrenamiento y prueba se guardan en cada cambio.
+    """Abre la ventana de ``teach``. Entrenamiento, prueba y descartados se guardan en cada cambio.
 
-    ``names`` es la cola de fotogramas (todos los que pasaron QC, o los N sugeridos con
-    ``--queue``); ``reasons`` dice por que se sugirio cada uno. Todo lo que decide vive
-    en ``TeachSession``: aca solo se leen eventos y se dibuja.
+    ``names`` es la cola de fotogramas (los que pasaron QC y no se descartaron, o los N
+    sugeridos con ``--queue``); ``reasons`` dice por que se sugirio cada uno. ``rejected``
+    son los descartados de la corrida y ``refill`` (``sampling.QueueRefill``) repone la
+    cola al descartar. Todo lo que decide vive en ``TeachSession``: aca solo se leen
+    eventos y se dibuja.
     """
     if not _preconditions(cfg, names):
         return 1
-    s = TeachSession(cfg, params, names, offsets, samples, test, reasons, target)
+    s = TeachSession(cfg, params, names, offsets, samples, test, reasons, target, rejected, refill)
     title, lay = "spectro teach", [layout_teach()]
 
     def on_mouse(event, mx, my, flags, _param):
@@ -444,6 +473,9 @@ def run_teach_ui(
         s.persist()
     print(f"{len(s.samples)} muestras de entrenamiento en {params.truth}; "
           f"{len(s.test)} de prueba en {params.test}")
+    if params.rejected:
+        print(f"{len(s.rejected)} fotogramas descartados en {params.rejected}   "
+              "(para restaurar: python -m spectro teach rejected remove)")
     if s.backup_path is not None:
         print(f"respaldo de la biblioteca previa a la sesion (tomado antes del primer cambio): "
               f"{s.backup_path.name}   (para deshacer: python -m spectro teach lib restore)")

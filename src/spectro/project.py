@@ -22,6 +22,11 @@ Interfaz publica:
     seed_run_config(calib_cfg, video, fps)  -> Config
     calib_recipe(run_cfg)                   -> Config
     RunContext.load(run_paths, calib_paths) -> RunContext
+    RunPaths.teach_dir / .test_dir          -> Path       (runs/<id>/teach/ y runs/<id>/test/)
+    RunPaths.truth / .rejected / .teach_report -> Path    (en teach/)
+    RunPaths.test / .test_report / .history -> Path       (en test/)
+    RunPaths.migrate_layout()               -> list[tuple[Path, Path]]   (layout viejo -> nuevo)
+    RunContext.rejected_files()             -> set[str]   (descartados sin muestra)
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .compat import migrate_run_layout
 from .config import ROI, AcceptanceConfig, Config, QCConfig
 
 #: Nombres por defecto de las tres carpetas de primer nivel.
@@ -177,27 +183,48 @@ class RunPaths:
         return self.out / "calibracion.png"
 
     @property
+    def teach_dir(self) -> Path:
+        """Carpeta del entrenamiento: ``runs/<id>/teach/``."""
+        return self.root / "teach"
+
+    @property
+    def test_dir(self) -> Path:
+        """Carpeta de la prueba: ``runs/<id>/test/``."""
+        return self.root / "test"
+
+    @property
     def truth(self) -> Path:
-        """Valores reales escritos a mano por ``teach`` (``file,value``)."""
-        return self.root / "truth.csv"
+        """Valores reales escritos a mano por ``teach`` (``runs/<id>/teach/truth.csv``, ``file,value``)."""
+        return self.teach_dir / "truth.csv"
+
+    @property
+    def rejected(self) -> Path:
+        """Fotogramas descartados al etiquetar (``runs/<id>/teach/rejected.csv``, ``file,set,date``): solo lo lee el etiquetado."""
+        return self.teach_dir / "rejected.csv"
 
     @property
     def teach_report(self) -> Path:
-        return self.out / "teach_report.csv"
+        """Informe del leave-one-out: ``runs/<id>/teach/teach_report.csv``."""
+        return self.teach_dir / "teach_report.csv"
 
     @property
     def test(self) -> Path:
-        """Conjunto de prueba (``file,value``): nunca entra a la biblioteca."""
-        return self.root / "test.csv"
+        """Conjunto de prueba (``runs/<id>/test/test.csv``, ``file,value``): nunca entra a la biblioteca."""
+        return self.test_dir / "test.csv"
 
     @property
     def test_report(self) -> Path:
-        return self.out / "test_report.csv"
+        """Informe de la prueba: ``runs/<id>/test/test_report.csv``."""
+        return self.test_dir / "test_report.csv"
 
     @property
     def history(self) -> Path:
-        """Una fila por evaluacion: la curva de aprendizaje de las rondas."""
-        return self.out / "teach_history.csv"
+        """Una fila por evaluacion (``runs/<id>/test/teach_history.csv``): la curva de aprendizaje de las rondas."""
+        return self.test_dir / "teach_history.csv"
+
+    def migrate_layout(self) -> list[tuple[Path, Path]]:
+        """Mueve a ``teach/`` y ``test/`` los archivos del layout viejo (ver ``compat.migrate_run_layout``)."""
+        return migrate_run_layout(self.root)
 
     def exists(self) -> bool:
         return self.config.exists()
@@ -236,6 +263,7 @@ def require_run(
         runs = list_runs(runs_dir=runs_dir)
         available = ", ".join(runs) if runs else "ninguna"
         raise ValueError(f"No existe la corrida {run_id!r} en {runs_dir}/. Disponibles: {available}")
+    run.migrate_layout()
     return run
 
 
@@ -298,6 +326,8 @@ class RunContext:
     train: list
     test: list
     templates_dir: Path
+    #: Descartados al etiquetar (``rejected.Rejection``); vacio si no hay ``rejected.csv``.
+    rejected: list = field(default_factory=list)
     #: Fotogramas que pasaron QC; ``_NOT_COMPUTED`` hasta que ``names()`` los resuelve.
     _names: object = field(default=_NOT_COMPUTED, repr=False)
 
@@ -322,10 +352,14 @@ class RunContext:
         truth: Path | str | None = None,
         test: Path | str | None = None,
         templates_dir: Path | str | None = None,
+        rejected: Path | str | None = None,
     ) -> "RunContext":
         from .qc import load_qc_report
+        from .rejected import load_rejected
         from .teach import load_truth
 
+        if run_paths is not None:
+            run_paths.migrate_layout()
         qc_path = Path(qc_report) if qc_report is not None else run_paths.qc_report
         templates = templates_dir if templates_dir is not None else (
             calib_paths.templates if calib_paths is not None else run_paths.templates
@@ -342,8 +376,14 @@ class RunContext:
             train=load_truth(truth if truth is not None else run_paths.truth),
             test=load_truth(test if test is not None else run_paths.test),
             templates_dir=Path(templates),
+            rejected=load_rejected(rejected if rejected is not None else run_paths.rejected),
             _names=passed if passed else _NOT_COMPUTED,  # ninguno paso: names() cae a la carpeta
         )
+
+    def rejected_files(self) -> set[str]:
+        """Los descartados al etiquetar, menos los que tienen muestra: un fotograma etiquetado nunca se esconde."""
+        labeled = {s.file for s in self.train + self.test}
+        return {r.file for r in self.rejected} - labeled
 
     def names(self) -> list[str]:
         """Los fotogramas que pasaron QC; sin reporte (o sin ninguno aprobado), los de la carpeta."""
