@@ -14,7 +14,8 @@ runs/*/samples/
 # Corrida vieja del layout de un solo video, conservada aparte hasta decidir
 old_data/
 
-# Se versionan: calib/ (receta y plantillas), runs/*/config.json y runs/*/out/
+# Se versionan: calib/ (receta y plantillas), runs/*/config.json, runs/*/out/,
+# runs/*/teach/ (entrenamiento), runs/*/test/ (prueba) y runs/summary.*
 
 # Python
 __pycache__/
