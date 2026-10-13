@@ -12,9 +12,9 @@ video → extract → qc → read → report → absorbance.csv
 
 ## Comandos
 
-- **Tests:** `.venv/Scripts/python -m pytest -q` (~30 s, sin videos reales, fixtures sintéticas).
+- **Tests:** `.venv/Scripts/python -m pytest -q` (~1 min, sin videos reales, fixtures sintéticas).
 - **CLI:** `.venv/Scripts/python -m spectro --help` y `... teach --help` (el árbol de `teach` y su tabla de migración). El paquete está instalado en modo editable.
-- **Estado de los datos (solo lectura):** `teach status`, `teach lib list --usage`, `teach samples list`, `teach test list`.
+- **Estado de los datos (solo lectura):** `teach status`, `teach lib list --usage`, `teach samples list`, `teach rejected list`, `teach test list`. `summary` lee los datos y solo escribe `runs/summary.*`.
 
 ## Documentos (cada tema vive en uno solo)
 
@@ -22,6 +22,7 @@ La lista de documentos, con el propósito de cada uno, es el [mapa del README](R
 
 ## Invariantes de diseño (no romperlos)
 
+- **Rutas de una corrida solo por `project.RunPaths`**: `out/` es lo del pipeline, `teach/` el entrenamiento (`truth.csv`, `rejected.csv`, `teach_report.csv`) y `test/` la prueba (`test.csv`, `test_report.csv`, `teach_history.csv`). Las corridas con el layout viejo se mudan solas (`compat.migrate_run_layout`).
 - **Descartar antes que adivinar.** Una lectura dudosa se descarta y deja un hueco; no se interpola ni se inventa.
 - **`read` toma de `calib/` solo `templates/`**; todo lo demás sale de `runs/<id>/config.json`. `calib/config.json` solo siembra corridas, sirve a `calibrate --auto` y guarda `acceptance`.
 - **Todo recorte de celda usa el corrimiento de cámara que midió `qc`**, igual que `read`. Si no, la biblioteca no coincide con lo que se lee. El recorte vive en `imaging.cell_glyphs`.
@@ -43,7 +44,10 @@ La lista de documentos, con el propósito de cada uno, es el [mapa del README](R
 
 ## Seguridad de datos
 
-- **No se edita a mano** `calib/templates/`, `runs/**/truth.csv` ni `runs/**/test.csv` (hay reglas que lo bloquean). Los cambios van por los comandos `teach`.
+- **No se edita a mano** `calib/templates/`, `runs/**/truth.csv` ni `runs/**/test.csv` (hay reglas que lo bloquean; hoy viven en `runs/<id>/teach/truth.csv` y `runs/<id>/test/test.csv`). Los cambios van por los comandos `teach`.
+- La migración al layout `teach/` y `test/` (`compat.migrate_run_layout`) no pisa nada: si existen origen y destino, falla.
+- `old_data/layout_20261013/` es el respaldo previo a la migración de las corridas reales al layout `teach/` y `test/`; también guarda el `calib/config.json` previo a fijar `acceptance`.
+- `summary` solo **lee** los datos, pero escribe `runs/summary.csv`, `runs/summary_chars.csv` y `runs/summary.html`: para probarlo sin tocar `runs/`, apuntá `--runs-dir` a una copia.
 - Las pruebas que **escriben** se hacen sobre una copia: `--calib-dir <carpeta temporal>` o archivos en el directorio temporal de la sesión.
 - Antes de una operación destructiva sobre datos reales, respaldo (`old_data/` o `calib/.backups/`). Los comandos de `teach` que borran respaldan solos (los últimos 5; `teach lib restore` vuelve atrás).
 - Verificar sobre datos reales (solo lectura o copias), no solo con fixtures: varios errores se vieron solo así.

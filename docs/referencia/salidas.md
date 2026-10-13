@@ -1,7 +1,8 @@
 # Formato de salida
 
-**Para quién y cuándo leerlo:** para cuando abrís un CSV de `runs/<id>/out/` y querés saber qué
-significa cada columna y cada estado, o vas a escribir un script que lo lea. Cómo abrir
+**Para quién y cuándo leerlo:** para cuando abrís un CSV de `runs/<id>/out/`, `teach/` o `test/`
+(o uno de los reportes de `runs/`) y querés saber qué significa cada columna y cada estado, o vas a
+escribir un script que lo lea. Dónde vive cada archivo está en [carpetas](carpetas.md). Cómo abrir
 `absorbance.csv` en Excel está en la [primera corrida](../empezar/primera-corrida.md#abrirlo-y-graficarlo-en-excel).
 
 ## `runs/<id>/out/absorbance.csv` — sólo filas válidas
@@ -79,7 +80,7 @@ fecha.
 | `ok`, `low_confidence`, `spike` | resultado de la lectura (de `readings.csv`) |
 | `coverage` | `ok` / `frames` |
 | `test_kind`, `test` | tipo de prueba (`same_run` u `other_video`) y cantidad de muestras |
-| `accuracy`, `accepted_error` | exactitud y error entre aceptadas sobre `test.csv`, con la biblioteca vigente |
+| `accuracy`, `accepted_error` | exactitud y error entre aceptadas sobre `test/test.csv`, con la biblioteca vigente |
 | `templates`, `fingerprint` | tamaño y huella de la biblioteca |
 | `outputs` | `up_to_date`, `stale`, `no_fingerprint` o `no_reading` |
 | `verdict`, `detail` | `accept` / `review` y el motivo; vacíos si no hay umbrales |
@@ -87,14 +88,72 @@ fecha.
 Las fracciones van entre 0 y 1 con 4 decimales. La tabla que imprime `batch` (y `teach test eval`
 sin corrida) es la misma, resumida.
 
+## `runs/summary.csv`, `runs/summary_chars.csv` y `runs/summary.html` — la efectividad de todas las corridas
+
+Los escribe [`summary`](comandos.md#summary--cuánto-acierta-el-lector-en-todas-las-corridas), y los
+reescribe completos cada vez. Cómo leerlos y por qué la fila `TOTAL` mide lo que mide, en la
+[guía](../calibrar/guia.md#todas-las-corridas-a-la-vez--summary).
+
+**`summary.csv`** tiene una fila por corrida y, al final, una fila `TOTAL`:
+
+| columnas | contenido |
+|---|---|
+| `run`, `frames` | corrida y fotogramas extraídos |
+| `qc_dark` … `qc_roi_outside` | descartes antes de leer, por motivo (los mismos 8 de `batch_report.csv`) |
+| `ok`, `low_confidence`, `spike` | resultado de la lectura (de `readings.csv`); vacíos si la corrida no se leyó |
+| `coverage` | `ok` / `frames` |
+| `longest_hole_s`, `holes` | el hueco más largo, en segundos, entre lecturas válidas consecutivas (el primer y el último fotograma leídos cuentan como bordes), y cuántos huecos superan `--hole` |
+| `test_kind`, `test` | tipo de prueba (`same_run` u `other_video`) y cantidad de muestras |
+| `correct`, `wrong`, `discarded` | la prueba, fotograma por fotograma, con la biblioteca vigente |
+| `accuracy`, `accuracy_lo`, `accuracy_hi` | exactitud (`correct` / `test`) y su intervalo de Wilson al 95 % |
+| `accepted_error` | error entre las aceptadas: `wrong` / (`correct` + `wrong`) |
+| `loo_exact`, `loo_total` | leave-one-out de las muestras de entrenamiento: leídas bien / total |
+| `evals`, `accuracy_first`, `accuracy_last` | cuántas filas tiene `teach_history.csv` y la exactitud de la primera y de la última |
+| `eval_current` | `yes` si la última evaluación se hizo con la biblioteca de hoy (misma huella), `no` si no, vacío si no se sabe |
+| `outputs` | `up_to_date`, `stale`, `no_fingerprint` o `no_reading` |
+| `verdict`, `detail` | `accept` / `review` y el motivo; vacíos si no hay umbrales |
+
+La fila **`TOTAL`** no es un promedio de las filas de arriba:
+
+* `frames`, los descartes, `ok` y `coverage` suman **solo las corridas que tienen `readings.csv`**:
+  una corrida sin leer no tiene cobertura que aportar.
+* La prueba junta las de todas las corridas, pero de **un solo tipo**: `other_video` si alguna
+  corrida lo tiene y, si no, `same_run`. `test_kind` dice cuál se usó (y la consola lo repite).
+* `longest_hole_s` es el máximo de las corridas y `holes`, la suma.
+* `loo_exact` y `loo_total` son los del leave-one-out conjunto de todas las corridas.
+* `outputs` es **el peor** estado de las corridas (`stale` gana sobre `no_reading`, este sobre
+  `no_fingerprint` y este sobre `up_to_date`).
+* Las columnas de tendencia quedan vacías.
+
+**`summary_chars.csv`** tiene una fila por carácter:
+
+| columna | contenido |
+|---|---|
+| `char` | el carácter (`0`-`9`, `.`, `-`) |
+| `test_cells`, `test_errors` | celdas de ese carácter en la prueba y cuántas se leyeron como otro |
+| `loo_cells`, `loo_errors` | lo mismo en el leave-one-out de las muestras de entrenamiento |
+| `top_confusions` | las tres confusiones más frecuentes, prueba y leave-one-out juntas: `'6'->'5' x1; ...` |
+
+Un carácter con `test_cells` en 0 no aparece en ninguna prueba: no se sabe cómo lo lee el lector.
+
+**`summary.html`** es una sola página, sin archivos aparte (los gráficos van incrustados): las
+mismas cinco secciones de la consola, más la exactitud por evaluación de cada corrida, el mapa de
+confusiones, la cobertura por corrida y el histograma de confianza de todas las lecturas.
+`--no-html` no la escribe.
+
 ## Salidas de `teach`
 
 | archivo | columnas y contenido |
 |---|---|
-| `runs/<id>/truth.csv`, `runs/<id>/test.csv` | `file,value`: muestras de entrenamiento / de prueba (el valor es texto) |
-| `out/teach_report.csv` | `file,typed,read_value,confidence,status,matches,missing`: leave-one-out de las muestras de entrenamiento |
-| `out/test_report.csv` | `file,typed,read_value,status,confidence,result`: una fila por fotograma de prueba; `result` es `correct`, `wrong` o `discarded` |
-| `out/teach_history.csv` | `date,kind,templates,training,test,distinct_values,correct,wrong,discarded,accuracy,accepted_error,coverage,fingerprint`: una fila por `teach test eval <id>` |
+| `teach/truth.csv`, `test/test.csv` | `file,value`: muestras de entrenamiento / de prueba (el valor es texto) |
+| `teach/rejected.csv` | `file,set,date`: fotogramas descartados al etiquetar; `set` es `train` o `test` (de qué conjunto se descartó). Solo lo lee el etiquetado: `read`, `qc`, `train`, `check`, `test eval` y `batch` lo ignoran |
+| `teach/teach_report.csv` | `file,typed,read_value,confidence,status,matches,missing`: leave-one-out de las muestras de entrenamiento |
+| `test/test_report.csv` | `file,typed,read_value,status,confidence,result`: una fila por fotograma de prueba; `result` es `correct`, `wrong` o `discarded` |
+| `test/teach_history.csv` | `date,kind,templates,training,test,distinct_values,correct,wrong,discarded,accuracy,accepted_error,coverage,fingerprint`: una fila por `teach test eval <id>` |
+
+Las rutas son relativas a `runs/<id>/`. Las corridas con el layout anterior (estos archivos sueltos
+en `runs/<id>/` o dentro de `out/`) se mudan solas al primer uso: ver
+[carpetas](carpetas.md#corridas-con-el-layout-anterior).
 
 ## Archivos de versiones anteriores
 
@@ -105,16 +164,21 @@ viejos a los nuevos (un único mapa de equivalencias, `src/spectro/compat.py`) y
 emiten siempre los nuevos. Ningún archivo se reescribe solo por leerlo; `absorbancia.csv` se lee
 como respaldo y nunca se borra (la próxima `report` escribe `absorbance.csv` al lado). La excepción
 es `teach_history.csv`: la próxima evaluación lo reescribe con el encabezado nuevo, conservando
-las filas.
+las filas. Los archivos de entrenamiento y de prueba que estaban en la ubicación anterior se
+**mueven** (sin cambiar su contenido) a `teach/` y `test/`: ver
+[carpetas](carpetas.md#corridas-con-el-layout-anterior).
 
-Un ejemplo real: `runs/img_8102/out/teach_history.csv` todavía empieza con
-`fecha,tipo,plantillas,…` y dice `misma_corrida`, y `teach test history img_8102` lo muestra así
-(11-oct-2026):
+Un ejemplo real: el 11-oct-2026, el `teach_history.csv` de `img_8102` (entonces en `out/`) todavía
+empezaba con `fecha,tipo,plantillas,…` y decía `misma_corrida`, y `teach test history img_8102` lo
+mostraba así:
 
 ```
   fecha               tipo           plant. entren. prueba correctas erroneas descart.  exact.  error  cobert.  cambio
   2026-10-09 18:38:26 same_run           43      30     20        19        1        0   95.0%   5.0%   100.0%
 ```
+
+Ese historial ya no se puede reproducir: el 13-oct-2026 `img_8102` no tenía prueba ni carpeta
+`test/`.
 
 Los flags `--min-exactitud` y `--min-cobertura` pasaron a `--min-accuracy` y `--min-coverage`; los
 viejos fallan mostrando la tabla de migración.

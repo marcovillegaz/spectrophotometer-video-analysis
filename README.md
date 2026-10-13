@@ -30,9 +30,12 @@ vez de inventar un valor**: un hueco en la serie es información honesta; un val
 python -m spectro doctor                          # ¿está todo instalado? estado de cada corrida
 python -m spectro batch videos/*.MOV --fps 4      # de los videos a un absorbance.csv por corrida
 python -m spectro teach status                    # ¿cuánto sabe leer el lector y qué falta?
+python -m spectro summary                         # ¿cuánto acierta en total, en qué falla, cuánta serie pierde?
 ```
 
-`doctor` y `teach status` solo leen; `batch` crea las corridas en `runs/` y escribe sus salidas.
+`doctor` y `teach status` solo leen; `batch` crea las corridas en `runs/` y escribe sus salidas;
+`summary` no cambia ningún dato y deja su reporte en `runs/summary.csv`, `summary_chars.csv` y
+`summary.html`.
 Antes de procesar videos de verdad, seguí la [instalación](docs/empezar/instalar.md) y la
 [primera corrida](docs/empezar/primera-corrida.md).
 

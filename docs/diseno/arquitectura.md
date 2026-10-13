@@ -60,6 +60,7 @@ Tres condiciones del problema mandan sobre todo el diseño:
             │  runs/<id>/out/contact_sheet.png <- las 40 lecturas menos confiables
             ▼
        batch: runs/batch_report.csv (una fila por corrida, con veredicto)
+     summary: runs/summary.csv, summary_chars.csv, summary.html (solo lee los datos)
 ```
 
 Cada etapa es un subcomando independiente que lee de disco y escribe a disco. Se puede volver a
@@ -70,11 +71,11 @@ decodificación del video es lo caro (~3 min) y ajustar parámetros es lo frecue
 
 | archivo | responsabilidad | interfaz pública |
 |---|---|---|
-| `cli.py` | argparse con un subcomando por etapa; `resolve_paths` convierte `--run <id>` en las rutas; `doctor`, `new` y `batch` (con su reporte); importa los módulos de forma perezosa para que `doctor` funcione aunque falte una dependencia | `main(argv)`, `build_parser()`, `resolve_paths(args)`, `batch_stages` |
-| `teach_cli.py` | el árbol `teach status \| lib \| train \| check \| samples \| test`: un handler corto por verbo, con el id de la corrida posicional; la tabla de migración de la sintaxis vieja | `register(sub, layout)`, `legacy_error(argv)`, `MIGRATION` |
-| `project.py` | el layout como código: id de corrida, rutas de `calib/` y `runs/<id>/`, siembra de configs; `RunContext` carga todo lo que `teach` necesita de una corrida por un solo camino | `run_id_from_video`, `RunPaths`, `CalibPaths`, `list_runs`, `require_run`, `seed_run_config`, `calib_recipe`, `RunContext.load` |
+| `cli.py` | argparse con un subcomando por etapa; `resolve_paths` convierte `--run <id>` en las rutas; `doctor`, `new`, `batch` (con su reporte) y `summary`; importa los módulos de forma perezosa para que `doctor` funcione aunque falte una dependencia | `main(argv)`, `build_parser()`, `resolve_paths(args)`, `batch_stages` |
+| `teach_cli.py` | el árbol `teach status \| lib \| train \| check \| samples \| test \| rejected`: un handler corto por verbo, con el id de la corrida posicional; la tabla de migración de la sintaxis vieja | `register(sub, layout)`, `legacy_error(argv)`, `MIGRATION` |
+| `project.py` | el layout como código: id de corrida, rutas de `calib/` y `runs/<id>/` (con `teach/` y `test/`), siembra de configs; `require_run` y `RunContext.load` mudan primero una corrida con el layout anterior; `RunContext` carga todo lo que `teach` necesita de una corrida por un solo camino | `run_id_from_video`, `RunPaths` (`teach_dir`, `test_dir`, `migrate_layout`), `CalibPaths`, `list_runs`, `require_run`, `seed_run_config`, `calib_recipe`, `RunContext.load`, `RunContext.rejected_files` |
 | `config.py` | esquema único de `config.json` como dataclasses anidadas; la geometría sabe qué caracteres espera cada celda | `Config.load/save/default`, `ROI`, `DigitsConfig` (`expected_chars`, `required_chars`), `AcceptanceConfig`, `DEFAULT_MAX_PER_LABEL` |
-| `compat.py` | el único mapa de nombres viejos (español) a nuevos (inglés) para encabezados de CSV, claves, estados y flags | `normalize_row`, `read_csv_rows`, `normalize_keys`, `normalize_config`, `normalize_status`, `HEADER_ALIASES`, `VALUE_ALIASES`, `LEGACY_FLAGS` |
+| `compat.py` | el único mapa de nombres viejos (español) a nuevos (inglés) para encabezados de CSV, claves, estados y flags, y de ubicaciones viejas a nuevas de los archivos de una corrida (los mueve sin pisar nada) | `normalize_row`, `read_csv_rows`, `normalize_keys`, `normalize_config`, `normalize_status`, `migrate_run_layout`, `HEADER_ALIASES`, `VALUE_ALIASES`, `LEGACY_FLAGS`, `LEGACY_RUN_FILES` |
 | `extract.py` | resolución de ffmpeg, metadatos, video → fotogramas, convención de nombres | `resolve_ffmpeg`, `probe_video`, `extract_frames`, `frame_name`, `time_from_name`, `load_frames_index`, `load_roi_sidecar` |
 | `imaging.py` | primitivas de imagen compartidas: carga con rotación, recorte, binarización, slots, NCC; el recorte de celdas que usan **todos** los que leen o arman la biblioteca | `load_frame`, `crop_for_reading`, `binarize`, `slot_boxes`, `normalize_glyph`, `read_roi`, `cell_glyphs` (`CellGlyph`), `ncc`, `estimate_shift`, `auto_anchor` |
 | `calibrate.py` | ROI, slots y polaridad → `runs/<id>/config.json`; interactivo, por flags o por registro contra `calib/reference.jpg` | `calibrate(args)`, `auto_calibrate(args)`, `refine_roi`, `pick_reference_frame` |
@@ -85,6 +86,8 @@ decodificación del video es lo caro (~3 min) y ajustar parámetros es lo frecue
 | `teach.py` | valores escritos → una etiqueta por celda → glifos; entrenamiento desde una o varias corridas y validación leave-one-out | `parse_value`, `value_to_cells`, `build_pool`, `gather_runs`, `train`, `validate`, `evaluate_library`, `coverage`, `load_truth`/`save_truth` |
 | `sampling.py` | qué fotogramas etiquetar: uniforme, azar estratificado, por incertidumbre (con persistencia y diversidad); conjuntos de entrenamiento y prueba | `suggest`, `suggest_uncertain`, `suggest_random`, `suggest_uniform`, `uncertainty`, `assign`, `leakage`, `readings_stale` |
 | `evaluation.py` | el **único evaluador** (`evaluate`) y, sobre él, la evaluación de la prueba: correcta / errónea aceptada / descartada, intervalos de Wilson, tipo de prueba e historial | `evaluate`, `to_validation`, `to_test_report`, `evaluate_test`, `wilson`, `format_test_report`, `write_test_report`, `append_history`, `load_history` |
+| `rejected.py` | el registro de fotogramas descartados al etiquetar (`teach/rejected.csv`); solo lo usa el etiquetado | `Rejection`, `load_rejected`, `save_rejected`, `rejected_files`, `add_rejected`, `remove_rejected`, `now_text` |
+| `summary.py` | el reporte general de efectividad: junta las pruebas por tipo, errores por carácter, huecos de la serie, tendencia y veredicto; funciones puras y un cargador delgado que reutiliza `report.load_run_input` y `teach.train(build=False)` | `load_all`, `pool_tests`, `series_gaps`, `loo_char_totals`, `char_table`, `trend`, `summarize`, `format_summary`, `write_summary_csv`, `write_chars_csv`, `write_html`, `SUMMARY_FIELDS`, `CHARS_FIELDS` |
 | `ui_common.py` | lo que comparten las dos ventanas de OpenCV: colores, `Button`, `BaseLayout`, `hit_test`, dibujo de texto, botones y títulos, apertura y cierre de la ventana | `Button`, `BaseLayout`, `hit_test`, `panel_geometry`, `draw_text`, `draw_button`, `draw_titles`, `open_window` |
 | `calib_ui.py` | UI de calibración manual: panel lateral con botones, lupa del cursor, rotación y vista previa de lectura; la lógica (estado, acciones, layout) es pura | `UIState`, `apply_action`, `apply_key`, `layout_panel`, `preview_reading`, `probe_frames`, `render`, `run_calibration_ui` |
 | `teach_session.py` | todo lo que decide la ventana de `teach`, sin ventana: estado, el reducer único de acciones, agregar y quitar muestras, los pedidos que tocan archivos, el respaldo único por sesión y las teclas | `TeachState`, `apply_action`, `TeachSession`, `TeachParams`, `add_sample`, `key_to_action` |
@@ -133,7 +136,7 @@ que rastrearla, y la fuente de la incertidumbre del muestreo.
 **`runs/<id>/out/read_meta.json`** — la huella de la biblioteca con la que se produjo
 `readings.csv`. Es lo que permite decir si una salida está al día sin comparar fechas.
 
-**`runs/<id>/truth.csv` y `test.csv`** — `file,value`, con el valor como **texto** (conserva
+**`runs/<id>/teach/truth.csv` y `runs/<id>/test/test.csv`** — `file,value`, con el valor como **texto** (conserva
 `-0.000` y los ceros finales). Las muestras de varias corridas se identifican como
 `corrida/archivo`, porque los videos repiten nombres de fotograma.
 
@@ -141,7 +144,10 @@ que rastrearla, y la fuente de la incertidumbre del muestreo.
 están en inglés; la prosa, en español. Los archivos escritos antes del cambio (encabezados en
 español, `absorbancia.csv`, `roi_fuera`, `misma_corrida`…) se leen a través de `compat.py`, el único
 lugar con el mapa de equivalencias. Los escritores emiten siempre los nombres nuevos y ningún
-archivo se reescribe solo por leerlo.
+archivo se reescribe solo por leerlo. Lo mismo con las **ubicaciones**: una corrida con el layout
+anterior (muestras sueltas en `runs/<id>/`, informes de `teach` en `out/`) se muda a `teach/` y
+`test/` la primera vez que se abre, moviendo los archivos sin tocar su contenido; si un archivo
+existe en los dos lugares, falla sin pisar ninguno ([carpetas](../referencia/carpetas.md#corridas-con-el-layout-anterior)).
 
 ## Cómo extenderlo
 

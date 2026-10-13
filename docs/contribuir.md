@@ -11,8 +11,8 @@ python -m pytest -q
 ```
 
 La cantidad de tests cambia con cada función nueva: el número vigente es el que imprime ese
-comando, no el de un documento. Como referencia, el 11-oct-2026 la suite tenía 975 tests y tardaba
-entre 30 y 50 s.
+comando, no el de un documento. Como referencia, el 13-oct-2026 la suite tenía 1010 tests y tardó
+74 s.
 
 Usan fixtures sintéticas — un "display" de mentira dibujado con OpenCV — así que no dependen del
 video ni de datos reales: convención de nombres, decodificación de dígitos, armado del número,
@@ -67,7 +67,7 @@ recorte de celda, un solo evaluador, la biblioteca solo por `library.py`…) est
 
 ## Datos reales: qué no tocar
 
-No se editan a mano `calib/templates/`, `runs/**/truth.csv` ni `runs/**/test.csv`: los cambios van
+No se editan a mano `calib/templates/`, `runs/*/teach/truth.csv` ni `runs/*/test/test.csv`: los cambios van
 por los comandos `teach`, que respaldan solos antes de borrar. El detalle está en
 [`CLAUDE.md`](../CLAUDE.md#seguridad-de-datos).
 

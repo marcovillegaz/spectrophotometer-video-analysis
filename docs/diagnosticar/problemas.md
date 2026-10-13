@@ -44,6 +44,23 @@ con `--run`.
 **Qué hacer.** Pasá el id como argumento. Si usás la sintaxis vieja de `teach`, el error muestra la
 tabla de migración.
 
+### `aviso: se movio ... -> ...` al abrir una corrida
+
+**Causa.** La corrida tenía el layout anterior (muestras sueltas en `runs/<id>/`, informes de
+`teach` en `out/`) y el comando la mudó a `teach/` y `test/`. Es normal y pasa una sola vez.
+
+**Qué hacer.** Nada. Los archivos se movieron sin cambiar su contenido
+([carpetas](../referencia/carpetas.md#corridas-con-el-layout-anterior)).
+
+### `ERROR: Existen el archivo viejo ... y el nuevo ...`
+
+**Causa.** El mismo archivo está en la ubicación vieja y en la nueva (por ejemplo, después de
+copiar encima una versión vieja de la corrida). La migración no elige por vos y no pisa ninguno.
+
+**Qué hacer.** Compará los dos, copiá a `old_data/` el que vas a descartar y borralo; después
+repetí el comando. Si es un `truth.csv` o un `test.csv`, son tus etiquetas: no borres ninguno sin
+copiarlo antes.
+
 ### `calibrate --auto` no engancha (score por debajo del mínimo)
 
 **Causa.** El registro corrige traslación, no rotación ni escala. Si el teléfono quedó a otra
@@ -125,6 +142,9 @@ aparecen está en la [guía de calibración](../calibrar/guia.md).
 | `suggest`: "solo hay N fotogramas inciertos y persistentes" | no hay un carácter desconocido; lo que duda es el parpadeo | normal; la ronda se completa al azar |
 | `teach status` o `batch_report.csv`: salidas `stale` | `readings.csv` se leyó con una biblioteca distinta de la de hoy (la cambiaste con `train`, `delete`, `relabel` o `restore`): sus lecturas y sus incertidumbres son de otro lector | `read --run <id>` y `report --run <id>` (o `batch … --no-skip-existing`) |
 | `read` se volvió lento | la biblioteca tiene muchas variantes | bajar `--max-per-label`, o borrar las que no aportan |
+| `summary`: `aviso: ninguna prueba incluye ...` | la prueba de ninguna corrida tiene ese carácter | ampliar la prueba (`teach test suggest <id> 20` y `teach test label <id> --queue 20`); es al azar, así que un carácter raro pide una prueba más grande o un video donde aparezca. Hasta entonces, su exactitud es desconocida, no buena |
+| `summary`: la línea final dice `la fila TOTAL mide la prueba same_run` | ninguna corrida es un _hold-out_ por video | la cifra total es optimista para un video nuevo: reservá un video sin entrenamiento propio (`teach train --exclude <id>`) ([por qué](../calibrar/guia.md#todas-las-corridas-a-la-vez--summary)) |
+| Un fotograma descartado al etiquetar no vuelve a aparecer en `suggest` | está en `teach/rejected.csv` | `teach rejected list <id>` lo muestra y `teach rejected remove <id> ARCHIVO` lo restaura |
 | Se borraron plantillas por error | — | `teach lib backups` lista los respaldos y `teach lib restore` vuelve al último (respaldando antes el estado actual) |
 
 ---

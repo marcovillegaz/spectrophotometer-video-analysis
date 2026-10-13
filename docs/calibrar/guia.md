@@ -50,8 +50,8 @@ Consecuencias que conviene tener presentes:
 |---|---|
 | _pool_ de datos sin etiquetar | los fotogramas extraídos de los videos (`runs/<id>/frames/`) |
 | etiqueta | el valor que escribís para un fotograma (`-0.018`) |
-| conjunto de **entrenamiento** | `runs/<id>/truth.csv`; sus glifos forman la biblioteca |
-| conjunto de **prueba** (_hold-out_, _test set_) | `runs/<id>/test.csv`; **nunca** entra a la biblioteca |
+| conjunto de **entrenamiento** | `runs/<id>/teach/truth.csv`; sus glifos forman la biblioteca |
+| conjunto de **prueba** (_hold-out_, _test set_) | `runs/<id>/test/test.csv`; **nunca** entra a la biblioteca |
 | entrenar | `teach train` / el botón `Agregar a biblioteca` |
 | inferencia | `read` sobre el resto de los fotogramas |
 | validación _leave-one-out_ | `teach check` (y lo que imprime `teach train`): cada muestra se lee sin sus propios glifos |
@@ -70,7 +70,7 @@ Consecuencias que conviene tener presentes:
    videos ──► (0) juntar el pool ─────────────────────────────────────────┐
                  batch --until qc                                          │
                                                                            ▼
-   (1) armar la PRUEBA, una vez  ──►  runs/<id>/test.csv     (nunca entrena)
+   (1) armar la PRUEBA, una vez  ──►  runs/<id>/test/test.csv (nunca entrena)
                  teach test suggest <id> / teach test label <id>
                                                                            │
         ┌──────────────────────────────────────────────────────────────────┘
@@ -94,8 +94,116 @@ Consecuencias que conviene tener presentes:
 ```
 
 Un buen ritmo es **rondas cortas**: unas 20-30 muestras, evaluar, mirar qué falló y recién
-entonces decidir qué etiquetar. Cada evaluación deja una fila en `runs/<id>/out/teach_history.csv`,
-que es tu **curva de aprendizaje**. En cualquier momento, `teach status` te dice dónde estás.
+entonces decidir qué etiquetar. Cada evaluación deja una fila en `runs/<id>/test/teach_history.csv`,
+que es tu **curva de aprendizaje**. En cualquier momento, `teach status` te dice dónde estás, y
+`summary` te da el panorama de todas las corridas juntas
+([paso 4](#todas-las-corridas-a-la-vez--summary)).
+
+### Las tres piezas y qué toca cada comando
+
+El diagrama de arriba es el ciclo en el tiempo. Este es el mismo ciclo visto por **archivos**: hay
+tres piezas, y cada comando de `teach` lee unas y escribe otras. Si te perdés entre
+`samples label`, `train`, `check`, `test label` y `test eval`, ubicalos acá.
+
+```
+  teach samples label <id>                               teach test label <id>
+             │ escribe                                              │ escribe
+             ▼                                                      ▼
+  ┌─────────────────────┐                                ┌─────────────────────┐
+  │ ENTRENAMIENTO       │                                │ PRUEBA              │
+  │ runs/<id>/teach/    │                                │ runs/<id>/test/     │
+  │   truth.csv         │                                │   test.csv          │
+  │ uno por video       │                                │ uno por video       │
+  └─────────────────────┘                                └─────────────────────┘
+       │           │                                                │
+       │ lee       │ lee                                            │ lee
+       ▼           ▼                                                │
+  teach check    teach train ────── reescribe ─────┐                │
+  leave-one-out  (antes respalda                   ▼                │
+  no toca la     la anterior;          ┌─────────────────────┐      │
+  biblioteca     es el único           │ BIBLIOTECA          │      │
+                 que la escribe)       │ calib/templates/    │      │
+                                       │ una para todos      │      │
+                                       └─────────────────────┘      │
+                                                   │ lee            │
+                                                   ▼                │
+                                         teach test eval <id> ◄─────┘
+                                         (mide; no cambia la biblioteca
+                                          ni las muestras)
+
+  El ciclo:  samples label ──► train ──► test eval ──► ¿dónde falla? ──┐
+                   ▲                                                   │
+                   └──── más entrenamiento de eso, nunca la prueba ────┘
+```
+
+Ninguna flecha va de la PRUEBA a `teach train`: esa es la regla de oro.
+
+| comando | lee | escribe | ¿cambia la biblioteca? |
+|---|---|---|---|
+| `teach samples label <id>` | los fotogramas de la corrida | `runs/<id>/teach/truth.csv` (y `teach/rejected.csv` si descartás un fotograma) | no (salvo los botones de biblioteca de la ventana, que hacen lo mismo que `teach train`) |
+| `teach train` | los `truth.csv` de todas las corridas, menos las de `--exclude` | `calib/templates/` (antes copia la anterior a `calib/.backups/`) y `teach/teach_report.csv` de cada corrida | **sí: es el único comando que la escribe** |
+| `teach check` | lo mismo que `train`, y la biblioteca vigente para comparar | solo `teach/teach_report.csv` de cada corrida | no |
+| `teach test label <id>` | los fotogramas de la corrida | `runs/<id>/test/test.csv` | no |
+| `teach test eval <id>` | `test.csv` y la biblioteca vigente | `test/test_report.csv` y una fila de `test/teach_history.csv` (sin `<id>`, solo imprime la tabla) | no |
+| `summary` | todo lo anterior, de todas las corridas | solo `runs/summary.csv`, `runs/summary_chars.csv` y `runs/summary.html` | no |
+
+**El fundamento** — Dos reglas sostienen todo lo demás.
+
+* **La prueba nunca se usa para entrenar.** Si un fotograma de `test.csv` aportara glifos a la
+  biblioteca, la prueba lo "acertaría" por haberlo visto (fuga de datos, _data leakage_): es verificar
+  la calibración con el mismo estándar con el que calibraste. Lo que falla en la prueba se corrige
+  etiquetando **otros** fotogramas parecidos como entrenamiento; el fotograma de prueba se queda donde
+  está ([paso 5](#paso-5--rondas-siguientes-dónde-etiquetar)).
+* **`check` no reemplaza a `test eval`.** El leave-one-out de `check` lee cada muestra de
+  entrenamiento sin sus propios glifos, pero con los de las demás muestras de ese mismo video: sirve
+  para cazar etiquetas mal tipeadas y es optimista frente a un video nuevo (con un carácter de un solo
+  ejemplo es al revés, más exigente). La cifra que vale es la de la prueba
+  ([paso 4](#paso-4--evaluar-en-la-prueba)).
+
+La prueba de un video que también entrena (tipo `same_run`, "misma" en la tabla) mide *ese* video.
+Para saber cómo le va al lector con un video que no vio, reservá un video entero: no le etiquetes
+entrenamiento y dejalo fuera de la biblioteca con `teach train --exclude <id>`. Su prueba sale como
+`other_video` ("otro"), el _hold-out_ por video, que es la cifra honesta.
+
+**Ejemplo: tres videos entrenan, uno queda de prueba.** Es el plan de la
+[ronda final](#4-la-ronda-final): `img_8102`, `img_8106` e `img_8110` entrenan (incluidos tramos con
+valores negativos, para que la biblioteca tenga plantillas `-`) e `img_8112` queda reservado como
+video nuevo.
+
+```powershell
+python -m spectro teach samples label img_8102 --queue 20     # entrenamiento, con valores negativos
+python -m spectro teach samples label img_8106 --queue 20
+python -m spectro teach samples label img_8110 --queue 20
+python -m spectro teach test suggest img_8112 20              # img_8112: solo prueba
+python -m spectro teach test label img_8112 --queue 20
+python -m spectro teach check --exclude img_8112              # leave-one-out, sin escribir la biblioteca
+python -m spectro teach train --exclude img_8112              # reescribe calib/templates/
+python -m spectro teach test eval img_8112                    # tiene que decir "otro video"
+```
+
+**Qué mirar** — Antes de entrenar, `teach samples list` tiene que mostrar **0** muestras de
+entrenamiento en el video reservado, y en la columna `caracteres sin cubrir` el `-` tiene que estar
+cubierto en al menos uno de los videos que entrenan (mejor en varios). Así se veía el 11 de octubre de 2026: `img_8110` todavía no tenía
+ningún `-`, e `img_8112` ya tenía 26 muestras de entrenamiento, así que todavía no servía como video
+nuevo.
+
+```
+== muestras de entrenamiento por corrida ==
+  corrida                muestras  valores  caracteres sin cubrir
+  img_8102                     29       20  ninguno
+  img_8106                     25       11  '1' '9'
+  img_8110                     28       26  '-'
+  img_8112                     26       21  ninguno
+```
+
+Después de `test eval img_8112`, el informe tiene que decir `otro video (hold-out por video)`. Si
+dice `misma corrida`, ese video tiene entrenamiento propio.
+
+**Errores comunes** — (1) Pasar a entrenamiento un fotograma de prueba que falló "para que aprenda":
+la prueba deja de medir. (2) Creer que `--exclude` alcanza: deja ese video fuera de la biblioteca,
+pero si su `truth.csv` tiene muestras, el informe lo sigue marcando `misma corrida`, porque mira si
+la corrida tiene entrenamiento propio. Para un _hold-out_ por video limpio, el video reservado no
+lleva muestras de entrenamiento. (3) Tomar el resultado de `teach check` como la exactitud del lector.
 
 ---
 
@@ -109,9 +217,11 @@ que es tu **curva de aprendizaje**. En cualquier momento, `teach status` te dice
 python -m spectro teach status
 ```
 
-**Qué pasa por dentro** — Lee la biblioteca (`calib/templates/`), los `truth.csv` y `test.csv` de
-cada corrida, sus `qc_report.csv`, `readings.csv`, `read_meta.json` y `teach_history.csv`. No
-escribe nada.
+**Qué pasa por dentro** — Lee la biblioteca (`calib/templates/`) y, de cada corrida, sus
+`teach/truth.csv`, `teach/rejected.csv`, `test/test.csv` y `test/teach_history.csv`, y sus
+`out/qc_report.csv`, `out/readings.csv` y `out/read_meta.json`. No escribe nada (salvo, una sola
+vez, mudar al layout nuevo los archivos de una corrida vieja; ver
+[carpetas](../referencia/carpetas.md#corridas-con-el-layout-anterior)).
 
 **El fundamento** — El ciclo tiene estado repartido en muchos archivos, y el error típico es
 comparar cosas de dos momentos distintos: lecturas hechas con una biblioteca y una evaluación hecha
@@ -194,7 +304,7 @@ teclado y `Agregar muestra` (o `Enter`). Sin ventana: `teach test add <id> ARCHI
 **Qué pasa por dentro** — `test suggest` muestrea **al azar, estratificado por tiempo** (la corrida se
 parte en N tramos y se toma un fotograma por tramo), y deja al menos `--gap` segundos (5 por defecto)
 de distancia a cualquier muestra de entrenamiento. Sin `--seed` usa siempre la misma semilla, así que
-repetir el comando da la misma lista. Lo que etiquetás se guarda en `runs/<id>/test.csv`.
+repetir el comando da la misma lista. Lo que etiquetás se guarda en `runs/<id>/test/test.csv`.
 
 **El fundamento** — Para saber cuánto sirve el modelo hay que probarlo con datos que **no vio**: es el
 conjunto de prueba, o _hold-out_. Es la muestra ciega del laboratorio. Tres decisiones lo hacen
@@ -270,7 +380,7 @@ valor enseñan menos que diez valores distintos.
 `cobertura: 0:34 1:5 …`): verde con 2+ ejemplos, naranja con 1, rojo si falta. Un carácter faltante no
 se podrá leer. Y el **leave-one-out** que imprime `teach train`: cada muestra se lee con la biblioteca
 armada *sin sus propios glifos*, como medir cada estándar con una curva que no lo incluye. Si la leyó
-bien, el modelo generaliza; si falló, el informe (`runs/<id>/out/teach_report.csv`) dice cuál y por
+bien, el modelo generaliza; si falló, el informe (`runs/<id>/teach/teach_report.csv`) dice cuál y por
 qué (casi siempre "sin ejemplos de X en las demás muestras"). Con pocos ejemplos de un carácter esa
 muestra se evalúa sin ninguno: es más exigente que la lectura real.
 
@@ -323,8 +433,8 @@ python -m spectro teach test eval          # tabla de todas las corridas que ten
 En la ventana: el botón `Evaluar prueba`.
 
 **Qué pasa por dentro** — Lee cada fotograma de `test.csv` con la biblioteca vigente (el mismo
-`read_frame` del pipeline) y lo clasifica; con una corrida, escribe `out/test_report.csv` y agrega una
-fila a `out/teach_history.csv` (con la huella de la biblioteca). Sin corrida imprime una tabla y no
+`read_frame` del pipeline) y lo clasifica; con una corrida, escribe `test/test_report.csv` y agrega una
+fila a `test/teach_history.csv` (con la huella de la biblioteca). Sin corrida imprime una tabla y no
 escribe nada.
 
 **El fundamento** — Un solo porcentaje de "exactitud" esconde lo que más importa, así que el
@@ -360,6 +470,166 @@ error tuyo al etiquetar, o una confusión real del lector (lo más valioso que p
 **Errores comunes** — Mover al conjunto de prueba una muestra que ya estaba en entrenamiento: sus
 glifos **ya están en la biblioteca**, y eso contamina la prueba. La herramienta lo avisa; para una
 prueba limpia, reconstruí la biblioteca (`teach train`) después de moverla.
+
+#### Todas las corridas a la vez — `summary`
+
+`teach test eval <id>` mide una corrida. Cuando tenés varias, la pregunta pasa a ser otra: ¿cuánto
+acierta el lector **en total**, en qué caracteres se equivoca, cuánta serie se pierde y si está
+mejorando? `summary` lo contesta en un solo reporte.
+
+**Qué hago**
+
+```powershell
+python -m spectro summary                      # todas las corridas; veredicto con los umbrales de calib/config.json
+python -m spectro summary --min-accuracy 0.95  # un flag le gana a ese umbral, solo en esta ejecución
+```
+
+Los flags están en la [referencia](../referencia/comandos.md#summary--cuánto-acierta-el-lector-en-todas-las-corridas).
+Los umbrales del veredicto se fijan en la sección `acceptance` de `calib/config.json`
+([config](../referencia/config.md#acceptance--criterio-del-lote--solo-en-calib)).
+
+**Qué pasa por dentro** — Por cada corrida, evalúa su `test/test.csv` con la biblioteca vigente
+(el mismo evaluador que `teach test eval`), lee `out/readings.csv` y `test/teach_history.csv`, y
+hace un leave-one-out conjunto con las muestras de entrenamiento de todas, **sin escribir la
+biblioteca**. No toca `calib/`, `teach/`, `test/` ni `out/`: lo único que escribe es
+`runs/summary.csv`, `runs/summary_chars.csv` y `runs/summary.html` (sus columnas, en
+[salidas](../referencia/salidas.md#runssummarycsv-runssummary_charscsv-y-runssummaryhtml--la-efectividad-de-todas-las-corridas)).
+
+**El fundamento** — Dos ideas para leer la sección 1, la de la exactitud.
+
+* **Cómo leer el intervalo.** Cada exactitud va con su intervalo de Wilson al 95 %
+  (`[IC95 a% a b%]`): el rango de exactitudes reales compatibles con lo que mediste. Leelo así: el
+  **extremo inferior** es lo que podés defender; el ancho, cuánto te falta medir. Con 19 correctas
+  de 20 (`img_8102`, 8-oct-2026) la exactitud es 95 %, pero el intervalo va del 76,4 % al 99,1 %: no
+  podés prometer más que "por encima de tres de cada cuatro". Dos cifras cuyos intervalos se
+  superponen **no se distinguen**: el 10-oct-2026 la prueba de `img_8112` como video nuevo dio 17 de
+  20 (85 %, intervalo de 64 % a 95 %); el 11-oct, ya con entrenamiento propio y con otra prueba de 16
+  fotogramas, dio 14 de 16 (87,5 %), que cae dentro de ese intervalo. Con estos tamaños no se puede
+  decir que una sea mejor que la otra. Juntar las pruebas de todas las corridas suma muestras y
+  achica el intervalo, pero el intervalo supone fotogramas **independientes**: dos fotogramas vecinos
+  del mismo valor cuentan como dos y valen casi como uno, así que con muchos repetidos el intervalo
+  real es más ancho que el impreso (por eso el informe cuenta los *valores distintos*).
+* **Por qué `same_run` es optimista.** En una prueba `same_run`, la biblioteca ya tiene glifos de
+  *ese mismo video*: la misma luz, el mismo enfoque, el mismo encuadre, el mismo día. Aunque cada
+  fotograma de prueba esté a más de `--gap` segundos del entrenamiento, se parece a algo que el
+  lector ya vio. Es validar un método con el mismo lote de reactivo con el que lo calibraste: mide
+  bien *ese* lote, no el próximo. Un video sin entrenamiento propio (`other_video`) trae otra luz y
+  otro montaje, que es lo que va a pasar con el próximo experimento. Por eso la fila `TOTAL` usa la
+  prueba `other_video` si alguna corrida la tiene, y solo si no hay ninguna cae a `same_run`.
+
+**Qué mirar** — Las cinco secciones, en orden.
+
+1. **Exactitud en la prueba.** Si aparecen las dos, `other_video` y `same_run`, la que responde
+   "¿leerá bien el próximo video?" es `other_video`. Mirá `k/n` y el extremo inferior del intervalo,
+   no solo el porcentaje.
+2. **Errores por carácter.** Un carácter con muchas celdas y errores concentrados (`'6'->'5'`) es
+   dónde etiquetar en la próxima ronda ([paso 5](#paso-5--rondas-siguientes-dónde-etiquetar)). El
+   aviso `ninguna prueba incluye ...` dice qué caracteres nunca se midieron: su exactitud es
+   desconocida, no buena.
+3. **Cobertura de la serie.** La cobertura dice cuánto se leyó; los **huecos** dicen dónde se
+   perdió. Un hueco es una pausa de más de `--hole` segundos (10 por defecto) entre lecturas
+   válidas: por "descartar antes que adivinar", ahí no hay datos. Un hueco de 15 s en una meseta
+   larga importa poco; en una transición rápida, puede perder justo lo que querías medir.
+4. **Tendencia.** Si la exactitud de `teach_history.csv` sube de una evaluación a otra, las rondas
+   rinden; si se aplanó, es momento de parar ([cuándo parar](#paso-5--rondas-siguientes-dónde-etiquetar)).
+   `con otra biblioteca (reevalua)` quiere decir que la última evaluación es de una biblioteca que
+   ya no existe: corré `teach test eval <id>` antes de comparar.
+5. **Veredicto.** Sin umbrales queda vacío a propósito: el criterio lo fijás vos, después de medir
+   ([ronda final](#4-la-ronda-final)). La línea `(la fila TOTAL mide la prueba ...)` dice qué tipo
+   de prueba resume el total.
+
+Al final, los avisos dicen qué corridas no tienen prueba o no se leyeron, con el comando que falta.
+
+**Ejemplo real.** Salida de `python -m spectro summary` el 13-oct-2026, con la biblioteca de 34
+plantillas (huella `a45faaf4e322`) y los umbrales de `calib/config.json` de ese día
+(`acceptance`: `min_accuracy` 0.90, `max_error` 0.02, `min_coverage` 0.80). Copiada sin cambios:
+
+```text
+== summary (biblioteca: 34 plantillas, huella a45faaf4e322) ==
+
+-- 1. Exactitud en la prueba --
+prueba same_run (todas las corridas) [misma corrida (optimista: mide este video)]: 49 muestras, 26 valores distintos
+  correctas 46/49 = 93.9%  [IC95 83.5% a 97.9%]
+  erroneas aceptadas 1/47 = 2.1%  [IC95 0.4% a 11.1%]
+  descartadas 2/49   cobertura 95.9%
+  para medir videos nuevos, reserva un video sin entrenamiento propio como prueba
+
+-- 2. Errores por caracter --
+  car.  prueba  err.   loo  err.  confusiones
+  -          2     1    47     0  '-'->' ' x1
+  .         49     0   108     0
+  0        122     0   229     0
+  1          9     0    31     0
+  2         12     0    37     0
+  3          7     0    28     0
+  4         18     0    14     0
+  5          8     0    28     1  '5'->'6' x1
+  6          7     1    26     1  '6'->'5' x2
+  7          5     0    13     0
+  8          4     0    14     1  '8'->'9' x1
+  9          4     0    12     0
+
+-- 3. Cobertura de la serie --
+  corrida                fotog. desc.qc roi_outside     ok  baja spike  cobert.     prueba  exact.  error plant.       huella         salidas  veredicto
+  img_8102                 5408       5           0   5092   311     0    94.2%          -       -      -     34 a45faaf4e322      up_to_date  review (sin prueba que lo verifique)
+  img_8106                 8972     262           0   7998   712     0    89.1%          -       -      -     34 a45faaf4e322      up_to_date  review (sin prueba que lo verifique)
+  img_8110                 1912      15           0   1661   236     0    86.9%          -       -      -     34 a45faaf4e322      up_to_date  review (sin prueba que lo verifique)
+  img_8112                 5088     222           0   4164   702     0    81.8%   49 misma   93.9%   2.1%     34 a45faaf4e322      up_to_date  review (error 2.1% > 2.0%)
+  TOTAL                   21380     504           0  18915  1961     0    88.5%   49 misma   93.9%   2.1%     34 a45faaf4e322      up_to_date  review (error 2.1% > 2.0%)
+  huecos (> 10 s entre lecturas validas):
+    img_8102               mas largo      2.5 s   huecos 0
+    img_8106               mas largo     12.5 s   huecos 2
+    img_8110               mas largo      5.0 s   huecos 0
+    img_8112               mas largo     14.5 s   huecos 4
+    TOTAL                  mas largo     14.5 s   huecos 6
+  leave-one-out (entrenamiento):
+    img_8102               29/29 = 100.0%
+    img_8106               23/25 = 92.0%
+    img_8110               27/28 = 96.4%
+    img_8112               26/26 = 100.0%
+    TOTAL                  105/108 = 97.2%
+
+-- 4. Tendencia --
+  img_8102               sin historial de evaluaciones
+  img_8106               sin historial de evaluaciones
+  img_8110               sin historial de evaluaciones
+  img_8112               5 evaluaciones   primera 87.5%  ultima 87.5%  cambio +0.0 pts   con otra biblioteca (reevalua)   salidas up_to_date
+
+-- 5. Veredicto --
+  img_8102               review (sin prueba que lo verifique)
+  img_8106               review (sin prueba que lo verifique)
+  img_8110               review (sin prueba que lo verifique)
+  img_8112               review (error 2.1% > 2.0%)
+  TOTAL                  review (error 2.1% > 2.0%)
+  (la fila TOTAL mide la prueba same_run)
+  aviso: img_8102: sin prueba. Arma una con: python -m spectro teach test suggest img_8102 20
+  aviso: img_8106: sin prueba. Arma una con: python -m spectro teach test suggest img_8106 20
+  aviso: img_8110: sin prueba. Arma una con: python -m spectro teach test suggest img_8110 20
+
+  escrito: runs\summary.csv, runs\summary_chars.csv, runs\summary.html
+```
+
+Cómo leerla:
+
+* **La única prueba es `same_run`, y solo de `img_8112`.** Las 49 muestras salen de ese video, que
+  también tiene entrenamiento propio: el 93,9 % mide `img_8112`, no un video nuevo, y es optimista.
+* **El `review` de `img_8112` (y del `TOTAL`) viene de un solo error.** La exactitud (93,9 %) pasa el
+  0,90 y la cobertura (81,8 %) pasa el 0,80, pero hubo 1 lectura errónea entre 47 aceptadas: 2,1 %,
+  apenas por encima del 2 %. Su intervalo va del 0,4 % al 11,1 %: 47 lecturas no alcanzan ni para
+  decir que el error supera el 2 % ni para certificar que está por debajo. Para respaldar un 2 % hace
+  falta mucha más prueba: por la *regla del tres*, con cero errores en *n* lecturas el error real
+  puede llegar a ~3/*n*, así que se necesitan unas **150 aceptadas sin ningún error**.
+* **Las otras tres corridas dan `review` por no tener prueba**, no por leer mal: su cobertura
+  (94,2 %, 89,1 % y 86,9 %) pasa el umbral, pero nada verifica su exactitud. Los avisos del final
+  dicen cómo armarla.
+
+**Errores comunes** — (1) Citar la exactitud de `TOTAL` como la de un video nuevo cuando la línea
+final dice `mide la prueba same_run`: ninguna corrida es un _hold-out_ por video, y la cifra es
+optimista. (2) Leer la cobertura y los huecos con salidas `stale`: salen de `readings.csv`, que es
+de la biblioteca con la que se leyó; la exactitud de la prueba, en cambio, se mide con la de hoy.
+Si la columna `salidas` no dice `up_to_date`, corré `read` y `report` antes de mirar la cobertura.
+(3) Tomar el leave-one-out de la sección 3 como la exactitud del lector: mide las muestras de
+entrenamiento, no la prueba.
 
 ---
 
@@ -468,6 +738,7 @@ python -m spectro teach test suggest img_8110 20        # ampliar la prueba dond
 python -m spectro teach train --exclude img_8112        # entrenar; img_8112 queda como video nuevo
 python -m spectro teach test eval                       # medir todas las corridas
 python -m spectro batch videos/*.MOV --fps 4 --no-skip-existing
+python -m spectro summary                               # el panorama final: prueba, caracteres, huecos
 ```
 
 Entre `test eval` y `batch`, fijá los umbrales en la sección `acceptance` de `calib/config.json`
@@ -477,7 +748,8 @@ Entre `test eval` y `batch`, fijá los umbrales en la sección `acceptance` de `
 escriben `truth.csv` y `test.csv`. `train` respalda y reescribe `calib/templates/`. `test eval` sin
 corrida mide cada `test.csv` con la biblioteca nueva y no escribe nada. `batch` relee todos los
 videos con la biblioteca final, escribe un `absorbance.csv` por corrida y `runs/batch_report.csv`
-con el veredicto `accept` / `review` de cada una.
+con el veredicto `accept` / `review` de cada una. `summary` no cambia ningún dato: junta todo en
+`runs/summary.*` ([cómo leerlo](#todas-las-corridas-a-la-vez--summary)).
 
 **El fundamento** — Los umbrales se fijan **después** de medir, nunca antes: con 20-40 muestras de
 prueba por corrida, una exactitud del 95 % tiene un intervalo de Wilson de entre 15 y 23 puntos de

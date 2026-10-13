@@ -141,7 +141,7 @@ aparecer como lecturas perdidas.
 ## Una biblioteca compartida, muestras por corrida
 
 La biblioteca (`calib/templates/`) es una sola porque el display es el mismo equipo; las muestras
-(`truth.csv`, `test.csv`) son por corrida porque cada una apunta a fotogramas de un video concreto y
+(`teach/truth.csv`, `test/test.csv`) son por corrida porque cada una apunta a fotogramas de un video concreto y
 se recorta con la config de ese video. `teach train` junta las muestras de entrenamiento de todas
 las corridas: cada una pasa por su propia ROI, rotación, celdas y corrimiento de cámara, y los
 glifos se mezclan porque `normalize_glyph` los lleva al mismo tamaño. Dos detalles de implementación
@@ -197,6 +197,21 @@ biblioteca vigente) en `runs/batch_report.csv`, calculado por una función pura
 midió da una confianza que no existe; y una corrida sin prueba, o con salidas de otra biblioteca,
 queda en `review` aunque sus números se vean bien, porque no hay con qué verificarlos.
 
+## `summary`: un reporte que no toca los datos, y un total que no promedia
+
+`summary` existe porque saber si el lector funciona obligaba a juntar a mano `teach status`,
+`teach check`, `teach test eval` y `batch`. Tres decisiones:
+
+* **Solo lectura sobre los datos.** Reutiliza el evaluador único (vía `report.load_run_input`) y el
+  leave-one-out de `teach.train(build=False)`, que no escribe la biblioteca; lo único que escribe son
+  los `runs/summary.*`. Se puede correr en cualquier momento del ciclo sin cambiar ningún resultado.
+* **La fila `TOTAL` mide la prueba con el _hold-out_ por video si existe.** Mezclar `same_run` con
+  `other_video` en un solo porcentaje taparía con la cifra optimista la que importa. Si no hay
+  ninguna `other_video`, usa `same_run` y lo dice, en vez de callarlo.
+* **La cobertura total suma solo las corridas leídas, y las salidas toman el peor estado.** Una
+  corrida sin `readings.csv` bajaría la cobertura sin decir nada del lector; una sola corrida
+  `stale` alcanza para que el total no se presente como al día.
+
 ## La semilla: reproducible cuando se pide
 
 Las sugerencias de `suggest` usan siempre la misma semilla si no se pasa `--seed`: repetir el
@@ -212,7 +227,8 @@ y el riesgo que cada una cubre.
 
 * **La prueba es al azar, estratificado por tiempo, nunca por incertidumbre.** Una prueba formada por
   los casos difíciles subestima la exactitud real; una formada por los fáciles la sobrestima. Solo el
-  azar es representativo. Se arma primero y se aparta (`test.csv`), y **nunca entra a la biblioteca**.
+  azar es representativo. Se arma primero y se aparta (`test/test.csv`, en su propia carpeta), y
+  **nunca entra a la biblioteca**.
 * **Distancia mínima entre prueba y entrenamiento (`--gap`, 5 s).** A 4 fotogramas por segundo los
   vecinos son casi la misma imagen; un fotograma de prueba pegado a uno de entrenamiento infla la
   exactitud (_data leakage_). Se avisa cuando se viola. Mover una muestra de entrenamiento a prueba

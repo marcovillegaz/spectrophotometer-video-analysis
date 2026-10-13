@@ -209,6 +209,44 @@ leyeron con la biblioteca vigente (`stale`, `no_fingerprint`, `no_reading`).
 > Si calibraste a mano una corrida que todavía no tiene salida, `batch` la pisa: para esas,
 > corré las etapas sueltas.
 
+## `summary` — cuánto acierta el lector, en todas las corridas
+```powershell
+python -m spectro summary                              # todas las corridas dadas de alta
+python -m spectro summary img_8102 img_8112            # solo esas
+python -m spectro summary --min-accuracy 0.95 --no-html   # valor de ejemplo, sin la página HTML
+```
+Junta en un solo reporte lo que hoy está repartido entre `teach status`, `teach check`,
+`teach test eval` y `batch`. **No toca los datos**: no escribe la biblioteca, ni `teach/`, ni
+`test/`, ni `out/`; lee fotogramas solo para evaluar la prueba y el leave-one-out. Imprime cinco
+secciones y escribe tres archivos en `runs/` (sus columnas, en
+[salidas](salidas.md#runssummarycsv-runssummary_charscsv-y-runssummaryhtml--la-efectividad-de-todas-las-corridas)):
+
+| sección | qué muestra |
+|---|---|
+| 1. Exactitud en la prueba | las pruebas de todas las corridas juntas, separadas por tipo (`other_video` y `same_run`), con correctas, erróneas aceptadas y descartadas y su intervalo de Wilson al 95 % |
+| 2. Errores por carácter | por cada carácter, celdas y errores en la prueba y en el leave-one-out, y sus confusiones más frecuentes; avisa los caracteres que ninguna prueba incluye |
+| 3. Cobertura de la serie | la tabla de `batch` (descartes por motivo, cobertura) más el hueco más largo y cuántos huecos superan `--hole`, y el leave-one-out por corrida |
+| 4. Tendencia | por corrida, según `teach_history.csv`: cuántas evaluaciones, la primera y la última exactitud, el cambio en puntos y si la última se hizo con la biblioteca de hoy |
+| 5. Veredicto | `accept` / `review` por corrida y en `TOTAL`; **vacío si no hay umbrales** |
+
+| flag | default | qué hace |
+|---|---|---|
+| `RUN …` | todas las dadas de alta | corridas a incluir |
+| `--gap` | `5.0` | segundos entre un fotograma de prueba y uno de entrenamiento para avisar de fuga |
+| `--hole` | `10.0` | un hueco es una pausa de más de estos segundos entre lecturas válidas |
+| `--min-accuracy` | `acceptance` | veredicto: exactitud mínima sobre la prueba (fracción, ej. `0.95`) |
+| `--max-error` | `acceptance` | veredicto: error máximo entre las lecturas aceptadas de la prueba (fracción) |
+| `--min-coverage` | `acceptance` | veredicto: cobertura mínima, `ok` / fotogramas extraídos (fracción) |
+| `--no-html` | off | no escribir `runs/summary.html` |
+
+Como en `batch`, **no hay umbrales por defecto**: sin flags ni sección `acceptance` en
+`calib/config.json` el veredicto queda vacío y el comando lo dice. La fila `TOTAL` suma la
+cobertura solo de las corridas que tienen `readings.csv`, mide la prueba con `other_video` si
+alguna corrida lo tiene (si no, con `same_run`, y lo aclara) y toma el peor estado de las salidas.
+Al final avisa qué corridas no tienen prueba o no se leyeron, con el comando que falta. Necesita una
+biblioteca en `calib/templates/`. Cómo leerlo, en la
+[guía](../calibrar/guia.md#todas-las-corridas-a-la-vez--summary).
+
 ## `teach` — entrenar y medir el lector
 
 `teach` reúne todo lo que toca la biblioteca y las muestras. Se elige un **área** y un **verbo**, y
@@ -219,8 +257,9 @@ teach status                                         panorama y siguiente paso
 teach lib     list | delete | relabel | clear | backups | restore     la biblioteca GLOBAL
 teach train   [RUN ...]                              arma la biblioteca desde las muestras
 teach check   [RUN ...]                              valida las muestras sin escribir la biblioteca
-teach samples list | add | remove | suggest | label  muestras de ENTRENAMIENTO (truth.csv)
-teach test    list | add | remove | suggest | label | eval | history   muestras de PRUEBA (test.csv)
+teach samples list | add | remove | suggest | label  muestras de ENTRENAMIENTO (teach/truth.csv)
+teach test    list | add | remove | suggest | label | eval | history   muestras de PRUEBA (test/test.csv)
+teach rejected list | remove                         fotogramas descartados al etiquetar (teach/rejected.csv)
 ```
 
 Cada área tiene su ayuda (`python -m spectro teach lib --help`, y lo mismo con las demás). La sintaxis anterior de `teach`
@@ -289,7 +328,7 @@ python -m spectro teach check                       # solo valida, no escribe la
 **reemplaza** la biblioteca, respaldando la anterior; con `--keep` **suma** sin duplicar (descarta
 los glifos casi idénticos a uno que ya está). Cada corrida se recorta con **su propia** config y su
 corrimiento de cámara. Imprime la cobertura de `0-9 . -`, el leave-one-out por corrida y escribe
-`runs/<id>/out/teach_report.csv`. **Los `test.csv` no se usan nunca.** `check` hace lo mismo sin
+`runs/<id>/teach/teach_report.csv`. **Los `test.csv` no se usan nunca.** `check` hace lo mismo sin
 escribir la biblioteca (sí escribe los `teach_report.csv`).
 
 > `teach train img_8102` **sin** `--keep` reemplaza la biblioteca compartida con las muestras de
@@ -306,8 +345,8 @@ escribir la biblioteca (sí escribe los `teach_report.csv`).
 
 ### `teach samples` y `teach test` — los dos conjuntos de una corrida
 
-Son simétricos: `samples` maneja el **entrenamiento** (`runs/<id>/truth.csv`) y `test` la
-**prueba** (`runs/<id>/test.csv`), que **nunca** entra a la biblioteca. Un fotograma está en un
+Son simétricos: `samples` maneja el **entrenamiento** (`runs/<id>/teach/truth.csv`) y `test` la
+**prueba** (`runs/<id>/test/test.csv`), que **nunca** entra a la biblioteca. Un fotograma está en un
 solo conjunto: agregarlo a uno lo saca del otro (y si pasa de entrenamiento a prueba, avisa que ya
 aportó glifos a la biblioteca).
 
@@ -340,10 +379,11 @@ tiempo, `uncertain` elige donde el lector duda y `mixed` —el default— es mit
 [guía](../calibrar/guia.md#paso-5--rondas-siguientes-dónde-etiquetar).
 
 **`eval`** con una corrida imprime el informe (correctas, erróneas aceptadas, descartadas, con
-intervalos de Wilson al 95 %), escribe `out/test_report.csv` y agrega una fila a
-`out/teach_history.csv`. Sin corridas (o con varias) imprime una tabla, la misma de `batch`, y no
+intervalos de Wilson al 95 %), escribe `test/test_report.csv` y agrega una fila a
+`test/teach_history.csv`. Sin corridas (o con varias) imprime una tabla, la misma de `batch`, y no
 escribe nada. `--min-accuracy`, `--max-error` y `--min-coverage` agregan el veredicto, igual que en
-`batch`.
+`batch`. Para el panorama de todas las corridas juntas, con errores por carácter y tendencia, está
+[`summary`](#summary--cuánto-acierta-el-lector-en-todas-las-corridas).
 
 | flag | dónde | default | qué hace |
 |---|---|---|---|
@@ -358,6 +398,16 @@ escribe nada. `--min-accuracy`, `--max-error` y `--min-coverage` agregan el vere
 **`--seed`.** Sin `--seed`, las sugerencias usan siempre la semilla 0 (la misma lista cada vez) y
 el botón `Aleatorio` de la ventana salta a un fotograma distinto cada vez. Con `--seed S` las dos
 cosas son reproducibles: misma semilla, misma lista y misma secuencia de saltos.
+
+### `teach rejected` — los fotogramas descartados al etiquetar
+```powershell
+python -m spectro teach rejected list                          # tabla de todas las corridas
+python -m spectro teach rejected list img_8112                 # sus descartados
+python -m spectro teach rejected remove img_8112 t_0001312.000.jpg   # restaurarlo: vuelve a sugerirse
+```
+El botón `Descartar` de la ventana anota el fotograma en `runs/<id>/teach/rejected.csv` para que
+`suggest` y `label --queue` no lo vuelvan a proponer. `remove` lo saca de esa lista. El registro
+**solo lo usa el etiquetado**: no cambia ninguna lectura ni ninguna evaluación.
 
 ### La ventana de `teach` (`samples label`, `test label`)
 
@@ -374,6 +424,8 @@ borra el último carácter); la ventana no tiene teclado numérico de botones.
 | `Borrar todo` | vaciar el valor escrito |
 | `Agregar muestra` (o `Enter`) | guardar el valor en el conjunto activo y pasar al siguiente |
 | `Quitar` | sacar la muestra de este fotograma |
+| `Descartar` | el fotograma no sirve (a medio dibujar, tapado, desenfocado): borra su muestra si la tenía, lo anota en `teach/rejected.csv` y lo saca de la cola; con `--queue`, pone en su lugar el candidato más cercano en el tiempo |
+| `Deshacer descarte` | devuelve el último descartado, con su muestra |
 | `Conjunto: Entrenam. / Prueba` | a qué conjunto va `Agregar muestra`; `samples label` abre en `Entrenam.`, `test label` en `Prueba` |
 | `Agregar a biblioteca` | suma las muestras de entrenamiento a la biblioteca, sin duplicar (como `train --keep`) |
 | `Reemplazar biblioteca` | la reescribe desde cero con las muestras actuales; pide un segundo clic |
